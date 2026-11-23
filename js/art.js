@@ -342,5 +342,9 @@ const Art = (() => {
     const shadow = `<ellipse cx="${W/2}" cy="${RAIL+4}" rx="${W/2}" ry="3" fill="#000" opacity=".25"/>`;
     return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" class="${opts.cls||'train-art'}" preserveAspectRatio="xMidYMid meet">${track()}${shadow}${inner}</svg>`;
   }
-  return { svg, shade, car: carSVG };
+  function icon(name, label){
+    const accessibility = label ? `role="img" aria-label="${label}"` : 'aria-hidden="true"';
+    return `<svg class="ui-icon" ${accessibility}><use href="#ui-${name}"/></svg>`;
+  }
+  return { svg, shade, car: carSVG, icon };
 })();

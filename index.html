@@ -10,10 +10,32 @@
 <link rel="icon" type="image/png" href="icon-512.png" sizes="512x512">
 <link rel="apple-touch-icon" href="apple-touch-icon.png" sizes="180x180">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="css/style.css">
-<link rel="stylesheet" href="css/theme-ticket.css">
+<link rel="stylesheet" href="css/style.css?v=20261123-icons">
+<link rel="stylesheet" href="css/theme-ticket.css?v=20261123-icons">
 </head>
 <body>
+<svg class="ui-symbols" width="0" height="0" aria-hidden="true">
+  <symbol id="ui-pause" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M6 4h4v16H6zm8 0h4v16h-4z"/></symbol>
+  <symbol id="ui-play" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M7 4l13 8-13 8z"/></symbol>
+  <symbol id="ui-fast" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M3 5l9 7-9 7zm10 0l9 7-9 7z"/></symbol>
+  <symbol id="ui-faster" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M1 5l7 7-7 7zm7.5 0l7 7-7 7zM16 5l7 7-7 7z"/></symbol>
+  <symbol id="ui-full-speed" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M2 4l8 8-8 8zm8 0l8 8-8 8zM20 4h2v16h-2z"/></symbol>
+  <symbol id="ui-menu" viewBox="0 0 24 24"><path d="M4 6h2m-2 6h2m-2 6h2M10 6h10m-10 6h10m-10 6h10"/></symbol>
+  <symbol id="ui-plus" viewBox="0 0 24 24"><path d="M5 12h14m-7-7v14"/></symbol>
+  <symbol id="ui-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="ui-map-fit" viewBox="0 0 24 24"><path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/><path d="M8 15l4-6 4 4"/><circle cx="12" cy="9" r="1.25" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="ui-up" viewBox="0 0 24 24"><path d="M5 15l7-7 7 7"/></symbol>
+  <symbol id="ui-down" viewBox="0 0 24 24"><path d="M5 9l7 7 7-7"/></symbol>
+  <symbol id="ui-next" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+  <symbol id="ui-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="ui-check" viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/></symbol>
+  <symbol id="ui-electric" viewBox="0 0 24 24"><path d="M13 2 5 14h6l-1 8 9-12h-6z"/></symbol>
+  <symbol id="ui-warning" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19zM12 9v4.5"/><circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="ui-depot" viewBox="0 0 24 24"><path d="M3 21V9l9-6 9 6v12zM8 21V12h8v9M8 16h8"/></symbol>
+  <symbol id="ui-cooling" viewBox="0 0 24 24"><path d="M12 2v20M3.3 7l17.4 10M3.3 17l17.4-10M9 4l3 3 3-3m-6 16 3-3 3 3"/></symbol>
+  <symbol id="ui-medal" viewBox="0 0 24 24"><circle cx="12" cy="9" r="6.2"/><circle cx="12" cy="9" r="2.2"/><path d="M7.5 13.5 5 21l4-1 2.5 1.5 1.5-6m3.5-2 2.5 7.5-4-1"/></symbol>
+  <symbol id="ui-star" viewBox="0 0 24 24"><path d="m12 2.5 2.8 5.9 6.5.9-4.7 4.6 1.1 6.5-5.7-3-5.7 3 1.1-6.5-4.7-4.6 6.5-.9z"/></symbol>
+</svg>
 <header id="top">
   <div class="brand">
     <div class="logo"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M5 3h14a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3l2 3h-2.5l-2-3h-7l-2 3H4l2-3a3 3 0 0 1-3-3V5a2 2 0 0 1 2-2zm1 3v5h5V6H6zm7 0v5h5V6h-5zM7 13.2a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6zm10 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6z" fill="#1d1405"/></svg></div>
@@ -21,11 +43,11 @@
   </div>
   <div class="datebox"><span class="d" id="date">1985-01-01</span><span class="era" id="era">改革开放 · 试点阶段</span></div>
   <div class="speed" id="speed">
-    <button data-s="0" title="暂停 (空格)">❚❚</button>
-    <button data-s="1" title="1 天/秒">▶</button>
-    <button data-s="2" title="3 天/秒">▶▶</button>
-    <button data-s="3" title="7 天/秒">▶▶▶</button>
-    <button data-s="4" title="15 天/秒">⏩</button>
+    <button data-s="0" title="暂停 (空格)" aria-label="暂停" aria-pressed="true"><svg class="ui-icon" aria-hidden="true"><use href="#ui-pause"/></svg></button>
+    <button data-s="1" title="1 天/秒" aria-label="播放，1 天/秒" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#ui-play"/></svg></button>
+    <button data-s="2" title="3 天/秒" aria-label="3 天/秒" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#ui-fast"/></svg></button>
+    <button data-s="3" title="7 天/秒" aria-label="7 天/秒" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#ui-faster"/></svg></button>
+    <button data-s="4" title="15 天/秒" aria-label="15 天/秒" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#ui-full-speed"/></svg></button>
   </div>
   <div class="kpis">
     <div class="kpi"><label>现金</label><span id="kCash">—</span></div>
@@ -41,7 +63,7 @@
     <button class="btn sm" id="bHelp">帮助</button>
     <button class="btn sm" id="bNew">新游戏</button>
   </div>
-  <button class="btn sm mobonly" id="bMenu" aria-label="菜单">☰</button>
+  <button class="btn sm mobonly" id="bMenu" aria-label="菜单" aria-expanded="false"><svg class="ui-icon" aria-hidden="true"><use href="#ui-menu"/></svg></button>
 </header>
 <div id="main">
   <section id="mapwrap">
@@ -50,11 +72,19 @@
     <div id="routebar"></div>
     <div id="legend"></div>
     <div id="inspector"></div>
-    <div id="zoom"><button data-z="1.25">＋</button><button data-z="0.8">－</button><button data-z="0">⌂</button></div>
+    <div id="zoom">
+      <button data-z="1.25" title="地图放大" aria-label="地图放大"><svg class="ui-icon" aria-hidden="true"><use href="#ui-plus"/></svg></button>
+      <button data-z="0.8" title="地图缩小" aria-label="地图缩小"><svg class="ui-icon" aria-hidden="true"><use href="#ui-minus"/></svg></button>
+      <button data-z="0" title="地图全览" aria-label="地图全览"><svg class="ui-icon" aria-hidden="true"><use href="#ui-map-fit"/></svg></button>
+    </div>
     <div id="ticker"><div class="lbl">要闻</div><div class="items" id="tickerItems"></div></div>
   </section>
   <aside id="panel">
-    <div id="sheetbar" class="mobonly"><span class="grip"></span><button id="bSheetDn" aria-label="放大地图">▼ 地图</button><button id="bSheetUp" aria-label="展开面板">▲ 面板</button></div>
+    <div id="sheetbar" class="mobonly">
+      <span class="grip"></span>
+      <button id="bSheetDn" aria-label="放大地图"><svg class="ui-icon" aria-hidden="true"><use href="#ui-down"/></svg> 地图</button>
+      <button id="bSheetUp" aria-label="展开面板"><svg class="ui-icon" aria-hidden="true"><use href="#ui-up"/></svg> 面板</button>
+    </div>
     <nav id="tabs"></nav>
     <div id="panelBody"></div>
   </aside>
@@ -66,11 +96,11 @@
 <script src="js/cars.js"></script>
 <script src="js/towns.js"></script>
 <script src="js/cargo.js"></script>
-<script src="js/art.js"></script>
+<script src="js/art.js?v=20261123-icons"></script>
 <script src="js/game.js"></script>
 <script src="js/hexmap.js"></script>
 <script src="js/sound.js"></script>
-<script src="js/tutorial.js"></script>
-<script src="js/ui.js"></script>
+<script src="js/tutorial.js?v=20261123-icons"></script>
+<script src="js/ui.js?v=20261123-icons"></script>
 </body>
 </html>

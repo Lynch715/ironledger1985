@@ -8,7 +8,10 @@ html,body{font-family:"Songti SC","Noto Serif SC","STSong",serif}
 #top .kpi label,#top .era,.brand small{color:#c9d6b8}
 .brand .logo{background:#b3261e;border-radius:2px}
 .brand .logo path{fill:#f4ecd9}
-.speed{background:#264232;border-color:#4d6e57}.speed button{color:#dfe8d2;border-color:#4d6e57}.speed button.on{background:#f4ecd9;color:#2f4f3a}
+.speed{background:#264232;border-color:#4d6e57;border-radius:2px}
+.speed button{color:#dfe8d2;border-color:#4d6e57}
+.speed button:not(.on):hover{background:#3a5b46}
+.speed button.on{background:#f4ecd9;color:#8e1c16;box-shadow:inset 0 -2px #b3261e}
 .kpi{border-color:#4d6e57}
 #top .btn{background:transparent;border-color:#8fa98f;color:#f4ecd9;border-radius:2px}
 #mapwrap{background:#efe6d0;background-image:radial-gradient(rgba(120,100,60,.08) 1px,transparent 1px);background-size:6px 6px}
@@ -24,11 +27,15 @@ html,body{font-family:"Songti SC","Noto Serif SC","STSong",serif}
 .tcard .art{background:#f1e7cf;border-bottom:1px dashed var(--line2)}
 .hint{background:#fff6dd;border-color:#c9a86a}
 #legend,#inspector,#maptools .chip,#zoom button{background:rgba(251,246,234,.95)!important;color:var(--text);border-color:var(--line2)}
+#zoom button{border-radius:2px;color:#2f4f3a;box-shadow:inset 0 0 0 2px #f4ecd9}
+#zoom button:hover,#zoom button:focus-visible{color:var(--gold2);border-color:var(--gold2)}
 #inspector{border:2px solid #2f4f3a;border-radius:2px}
 #ticker{background:#2f4f3a;color:#f4ecd9}#ticker .lbl{background:#b3261e;color:#fff}#ticker .items,#ticker .items b{color:#f4ecd9}
 .bar{background:#e3d8bd}.bar i{background:#b3261e}
 #modal .box{border:3px double #2f4f3a;border-radius:4px}
 .toast{background:#fffaf0;color:var(--text)}
+.toast.good .ui-icon,.hint .ui-icon{color:var(--gold2)}
+.ach.on .ic{background:#fbf6ea;color:var(--gold2);border-color:var(--gold2)}
 
 /* 二三线城市站点 */
 .stops .s.town{border-radius:0}
