@@ -1,0 +1,1412 @@
+// =============================================================
+//  铁道春秋 · 界面与地图
+// =============================================================
+(() => {
+  const $ = s => document.querySelector(s);
+  // 只阻止浏览器缩放；触摸事件继续传递给地图。
+  for (const type of ['gesturestart', 'gesturechange', 'touchmove']) {
+    document.addEventListener(type, e => {
+      if (e.cancelable && (type !== 'touchmove' || e.touches.length > 1)) e.preventDefault();
+    }, { capture:true, passive:false });
+  }
+  const G = Game, C = G.cities, E = G.edges;
+  const W = G.fmtW;
+  const fmtY = y => W(y) + '元';
+  const NW = v => Math.abs(v||0) < 500 ? W(0) : '−' + W(v);  // 支出类：负号 + 金额，零值不带负号
+  const pct = x => (x*100).toFixed(0) + '%';
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const SPEEDS = [0, 1, 3, 7, 15];
+  const ui = { tab:'overview', speed:1, lastSpeed:1, selCity:null, selEdge:null, selRoute:null, mode:'view', draft:[],
+    layers:{ state:true, rivals:true, cand:true, trains:true, labels:true, flow:false, industry:false }, mf:{ use:'all', type:'all', origin:'all', show:'sale', cat:'loco', ck:'all' },
+    buyRoute:null, sig:'', confirm:null, modalOpen:false, floaters:[], lastEvt:0, newsTop:null };
+  const RIVAL = {}; RIVALS.forEach(r => RIVAL[r.id] = r);
+  const ownerName = o => o==='P' ? (G.S.company) : o==='S' ? '国家铁路' : (RIVAL[o] ? RIVAL[o].name : o);
+  const ownerColor = o => o==='P' ? P.own : o==='S' ? '#8095b0' : (RIVAL[o] ? RIVAL[o].color : '#999');
+  const artCache = {};
+  // 车辆立绘：优先加载 img/trains/<车型ID>.png，没有图片时显示程序生成的SVG
+  const art = id => `<div class="tart"><img src="img/trains/${id}.png" alt="" onload="this.parentNode.classList.add('has-img')" onerror="this.remove()">${artCache[id] || (artCache[id] = Art.svg(G.trainById[id]))}</div>`;
+  const carCache = {};
+  const carArt = id => `<div class="tart"><img src="img/cars/${id}.png" alt="" onload="this.parentNode.classList.add('has-img')" onerror="this.remove()">${carCache[id] || (carCache[id] = Art.car(G.carById[id]))}</div>`;
+  const consistText = t => { const m = G.trainById[t.model]; if (G.isUnit(m)) return '固定编组'; const c = (t.cars||[]).filter(x => x.n); return c.length ? c.map(x => `${(G.carById[x.id]||{name:x.id}).name}×${x.n}`).join(' + ') : '<span class="neg">未编组</span>'; };
+  const typeName = { steam:'蒸汽', diesel:'内燃', electric:'电力', emu:'电动车组', dmu:'内燃动车组' };
+  const useName = { pax:'客运', freight:'货运' };
+
+  // ---------------- 地图 ----------------
+  const cv = $('#map'), ctx = cv.getContext('2d');
+  let DPR = window.devicePixelRatio || 1;
+  const view = { s: 18, ox: 0, oy: 0 };
+  const COS = Math.cos(35 * Math.PI/180);
+  const wx = lon => (lon - 104) * COS, wy = lat => -(lat - 35);
+  const sx = lon => wx(lon) * view.s + view.ox, sy = lat => wy(lat) * view.s + view.oy;
+  function resize(){ const r = cv.getBoundingClientRect(); DPR = window.devicePixelRatio || 1; cv.width = r.width*DPR; cv.height = r.height*DPR; }
+  function fit(){ const r = cv.getBoundingClientRect(); const w = r.width, h = r.height - 34;
+    const x0 = wx(86), x1 = wx(128.5), y0 = wy(48.5), y1 = wy(21);
+    view.s = Math.min(w / (x1-x0), h / (y1-y0)) * 0.95; view.ox = w/2 - (x0+x1)/2*view.s; view.oy = h/2 - (y0+y1)/2*view.s; }
+  window.addEventListener('resize', () => { resize(); });
+
+  const RIVERS = [
+    { name:'长江', pts:[[91,33.2],[95,33],[97.5,32.5],[99.2,29.5],[100.2,26.9],[101.8,26.5],[103.3,28.2],[104.6,28.8],[105.8,28.9],[106.6,29.6],[108.4,30.7],[110.2,31],[111.3,30.7],[112.5,30.2],[113.6,29.8],[114.3,30.6],[115.4,29.9],[116.2,29.8],[117.1,30.5],[118.2,31.4],[118.8,32.1],[119.8,32.3],[120.9,31.9],[121.9,31.3]] },
+    { name:'黄河', pts:[[96.2,34.9],[98.5,35.2],[100.6,36],[101.8,36.1],[103.8,36.1],[104.6,37.2],[105.2,37.5],[106.3,38.5],[106.8,39.5],[107.5,40.6],[109.8,40.5],[111.2,40.2],[111.3,39.1],[110.6,37.6],[110.4,35.7],[110.3,34.6],[111.6,34.8],[113.6,34.9],[114.8,35.1],[116,35.8],[117,36.7],[118.2,37.4],[119.1,37.7]] },
+    { name:'珠江', pts:[[104.5,25.2],[106.5,25],[108.4,23.4],[109.6,23.6],[111.3,23.5],[112.5,23.1],[113.3,23.1],[113.7,22.5]] },
+    { name:'淮河', pts:[[113.2,32.4],[115,32.4],[116.5,32.7],[117.5,33],[118.7,33.3],[119.2,33.8]] },
+    { name:'松花江', pts:[[124.2,45.5],[125.5,45.4],[126.6,45.8],[128,46],[130,46.8]] },
+    { name:'湘江', pts:[[111.2,25.6],[112.6,26.9],[113,27.9],[112.9,28.7],[113,29.2]] },
+  ];
+  const PLATEAU = [[78,35.5],[80.5,31],[85,28.6],[89,27.8],[92.5,27.6],[96,28.2],[98.6,28.8],[100.5,30.5],[102.2,32.2],[102.5,34.2],[101.5,36.8],[98.5,38.4],[94,38.8],[90,37.6],[86,36.6],[81,36.3]];
+  const DESERT = [[79,39],[83,41.2],[88,42],[92,41],[93,39.6],[90,38.4],[85,37.6],[81,37.4]];
+  const REGION_LABELS = [['华北',114.5,41.6],['东北',127,44.5],['华东',119.6,33.6],['华中',112.0,30.0],['华南',110.5,23.4],['西北',100.5,40],['西南',99.0,27.2]];
+
+  function edgeTracks(e){ const S = G.S; const ts = S.tracks.filter(t => t.e === e.i);
+    const ord = o => o==='S' ? 0 : o==='P' ? 9 : 5; return ts.sort((a,b) => ord(a.owner)-ord(b.owner)); }
+
+  const P = {};
+  function loadPalette(){ const cs = getComputedStyle(document.documentElement); const d = { grid:'rgba(120,150,190,.07)', gridText:'rgba(140,165,200,.28)', plateau:'rgba(150,120,80,.10)', plateauLine:'rgba(170,140,90,.16)', terrText:'rgba(190,160,110,.22)', river:'rgba(80,150,220,.28)', region:'rgba(160,185,220,.07)', cand:'rgba(160,180,210,.25)', stateHsr:'#b8cdea', stateElec:'#7f97b8', state:'#55657d', own:'#f2b544', cityLit:'#ffd88a', city:'#26344b', cityLitLine:'#fff6dc', cityLine:'#7488a6', halo:'rgba(8,13,22,.85)', labelLit:'#ffe3a6', label:'#b9c6da', glow:'rgba(255,205,110,A)', font:'sans-serif' };
+    Object.keys(d).forEach(k => { const v = cs.getPropertyValue('--m-' + k).trim(); P[k] = v || d[k]; }); }
+  loadPalette();
+  let terr = null;
+  function drawMap(now){
+    const S = G.S; if (!S) return;
+    const w = cv.width/DPR, h = cv.height/DPR;
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.clearRect(0,0,w,h);
+    // 六边形地形底图（一次生成，缓存）
+    if (!terr) terr = HexMap.build(72);
+    ctx.fillStyle = '#a7c1c6'; ctx.fillRect(0,0,w,h);
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(terr.canvas, terr.x0*view.s+view.ox, terr.y0*view.s+view.oy, terr.canvas.width/terr.K*view.s, terr.canvas.height/terr.K*view.s);
+    // 地名（分层：按缩放显示，纸色描边）
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    const SERIF = '"Songti SC","STSong","Noto Serif CJK SC","Source Han Serif SC",serif';
+    const LST = { region:['600', 'rgba(96,68,36,.62)', 46], desert:['600', 'rgba(132,96,48,.62)', 34], range:['600', 'rgba(78,54,30,.82)', 26],
+      sea:['400', 'rgba(44,82,98,.72)', 40], cape:['400', 'rgba(84,62,40,.78)', 16], island:['600', 'rgba(84,62,40,.8)', 18], lake:['400', 'rgba(36,76,96,.85)', 15], river:['400', 'rgba(36,76,96,.85)', 15] };
+    HexMap.LABELS.forEach(([n,lo,la,sz,ty,rot,mn,mx]) => {
+      if (view.s < mn || view.s > mx) return;
+      const st = LST[ty]; const fs = Math.min(st[2], Math.max(10, view.s*sz));
+      const fade = ty === 'region' ? Math.max(0.25, Math.min(1, 1.6 - view.s/40)) : 1;
+      ctx.save(); ctx.translate(sx(lo), sy(la)); if (rot) ctx.rotate(rot*Math.PI/180); ctx.globalAlpha = fade;
+      ctx.font = `${st[0]} ${fs}px ${SERIF}`;
+      ctx.lineWidth = Math.max(2, fs*0.16); ctx.strokeStyle = ty === 'sea' || ty === 'lake' || ty === 'river' ? 'rgba(214,228,226,.55)' : 'rgba(244,236,214,.6)'; ctx.strokeText(n, 0, 0);
+      ctx.fillStyle = st[1]; ctx.fillText(n, 0, 0); ctx.restore();
+    });
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+
+    // 走廊与轨道
+    const selR = ui.selRoute && S.routes.find(r => r.id === ui.selRoute);
+    E.forEach(e => {
+      const a = C[e.a], b = C[e.b]; const x1 = sx(a.lon), y1 = sy(a.lat), x2 = sx(b.lon), y2 = sy(b.lat);
+      const ts = edgeTracks(e).filter(t => (t.owner==='S' ? ui.layers.state : t.owner==='P' ? true : ui.layers.rivals));
+      const all = edgeTracks(e); if (e.sup && !all.length) return;
+      if (!all.length){ if (ui.layers.cand || ui.selEdge === e.i){ ctx.setLineDash([2,5]); ctx.strokeStyle = ui.selEdge===e.i ? '#ffd27a' : P.cand; ctx.lineWidth = 1.2; line(x1,y1,x2,y2); ctx.setLineDash([]); } }
+      const n = ts.length, dx = x2-x1, dy = y2-y1, L = Math.hypot(dx,dy) || 1, nx = -dy/L, ny = dx/L;
+      ts.forEach((t, k) => {
+        const off = (k - (n-1)/2) * 3.4; const ox = nx*off, oy = ny*off;
+        let col, lw;
+        if (t.owner === 'S'){ col = t.v >= 250 ? P.stateHsr : t.elec ? P.stateElec : P.state; lw = t.v >= 250 ? 2.4 : 1.6; }
+        else if (t.owner === 'P'){ col = P.own; lw = t.v >= 250 ? 4 : 3; }
+        else { col = ownerColor(t.owner); lw = t.v >= 250 ? 3 : 2.2; }
+        ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.globalAlpha = t.status === 'build' ? 0.75 : 1;
+        if (t.status === 'build') ctx.setLineDash([6,4]);
+        line(x1+ox, y1+oy, x2+ox, y2+oy); ctx.setLineDash([]);
+        if (t.v >= 250 && t.status === 'ok'){ ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 0.9; line(x1+ox,y1+oy,x2+ox,y2+oy); }
+        if (t.owner === 'P' && t.elec && t.v < 250 && t.status==='ok'){ ctx.strokeStyle = 'rgba(40,25,5,.8)'; ctx.lineWidth = 0.8; ctx.setLineDash([2,6]); line(x1+ox,y1+oy,x2+ox,y2+oy); ctx.setLineDash([]); }
+        ctx.globalAlpha = 1;
+      });
+      if (ui.selEdge === e.i && all.length){ ctx.strokeStyle = 'rgba(255,210,122,.35)'; ctx.lineWidth = 12; line(x1,y1,x2,y2); }
+    });
+    // 选中线路高亮
+    if (selR){ ctx.strokeStyle = selR.color; ctx.globalAlpha = 0.35; ctx.lineWidth = 11; pathStops(selR.stops); ctx.globalAlpha = 1; ctx.lineWidth = 2.5; ctx.setLineDash([]); pathStops(selR.stops); }
+    // 新建线路草稿
+    if (ui.mode === 'route' && ui.draft.length){
+      ctx.strokeStyle = '#ffd27a'; ctx.lineWidth = 4; ctx.setLineDash([8,5]); pathStops(ui.draft); ctx.setLineDash([]);
+      const last = ui.draft[ui.draft.length-1];
+      G.adj[last].forEach(e => { const o = e.a===last ? e.b : e.a; if (ui.draft.includes(o)) return; const ok = G.routeAllowed(last, o);
+        ctx.beginPath(); ctx.arc(sx(C[o].lon), sy(C[o].lat), 11, 0, Math.PI*2); ctx.strokeStyle = ok ? 'rgba(126,226,176,.9)' : 'rgba(255,120,120,.5)'; ctx.lineWidth = 2; ctx.stroke(); });
+    }
+    if (ui.layers.flow) drawFlows();
+    if (ui.layers.industry) drawIndustry();
+    // 城市
+    const pulse = 0.5 + 0.5*Math.sin(now/600);
+    C.forEach(c => {
+      const x = sx(c.lon), y = sy(c.lat), pop = G.popOf(c, G.ym(S.day).y);
+      if (c.tier > 1){ // 二三线城市：方形站标
+        const lv = G.stationLv(c.i), lit = !!S.lit[c.i], st = S.stations[c.i];
+        const r = (c.tier === 2 ? 3.4 : 2.7) + Math.min(1.5, view.s/40);
+        if (lit){ const g = ctx.createRadialGradient(x,y,0,x,y,r*3.4); g.addColorStop(0, P.glow.replace('A', (0.45+0.2*pulse).toFixed(2))); g.addColorStop(1, P.glow.replace('A','0')); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r*3.4,0,Math.PI*2); ctx.fill(); }
+        ctx.beginPath(); ctx.rect(x-r, y-r, r*2, r*2);
+        if (lv >= 1){ ctx.fillStyle = lit ? P.cityLit : P.city; ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = lit ? P.cityLitLine : P.cityLine; ctx.stroke();
+          for (let k = 0; k < lv; k++){ ctx.fillStyle = lit ? '#7a2a12' : '#f3e7c9'; ctx.fillRect(x - r + 1.2 + k*(r*2-2.4)/3, y + r - 2.2, (r*2-2.4)/3 - 0.8, 1.4); } }
+        else { ctx.fillStyle = 'rgba(243,231,201,.85)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = P.cityLine; if (st && st.pend) ctx.setLineDash([2,2]); ctx.stroke(); ctx.setLineDash([]); }
+        if (ui.selCity === c.i){ ctx.strokeStyle = '#7a2a12'; ctx.lineWidth = 2; ctx.strokeRect(x-r-4, y-r-4, r*2+8, r*2+8); }
+        return;
+      }
+      const r = 2.6 + Math.sqrt(pop)/6.5;
+      const lit = !!S.lit[c.i];
+      if (lit){ const g = ctx.createRadialGradient(x,y,0,x,y,r*4.2); g.addColorStop(0, P.glow.replace('A', (0.55+0.2*pulse).toFixed(2))); g.addColorStop(1, P.glow.replace('A','0')); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r*4.2,0,Math.PI*2); ctx.fill(); }
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+      ctx.fillStyle = lit ? P.cityLit : P.city; ctx.fill();
+      ctx.lineWidth = lit ? 1.6 : 1.2; ctx.strokeStyle = lit ? P.cityLitLine : P.cityLine; ctx.stroke();
+      if (c.tag === '特区' && !lit){ ctx.strokeStyle = 'rgba(255,120,120,.7)'; ctx.beginPath(); ctx.arc(x,y,r+2.5,0,Math.PI*2); ctx.stroke(); }
+      if (ui.selCity === c.i){ ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x,y,r+5,0,Math.PI*2); ctx.stroke(); }
+    });
+    // 机务段标记
+    (S.depots || []).forEach(d => { const c = C[d.ci], x = sx(c.lon), y = sy(c.lat) - 10 - (d.lv >= 2 ? 1 : 0), w = d.lv >= 2 ? 6 : 5;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4); ctx.fillStyle = d.pend && !d.lv ? 'rgba(120,120,120,.8)' : '#2f4f3a'; ctx.strokeStyle = '#f4e9cf'; ctx.lineWidth = 1.2;
+      ctx.fillRect(-w/2, -w/2, w, w); ctx.strokeRect(-w/2, -w/2, w, w); ctx.restore(); });
+    // 列车
+    if (ui.layers.trains) drawTrains(now);
+    // 标签
+    if (ui.layers.labels){
+      ctx.textBaseline = 'middle';
+      C.forEach(c => {
+        const pop = c.pop0; const lit = !!S.lit[c.i];
+        const town = c.tier > 1, hasSt = town && G.stationLv(c.i) >= 1;
+        if (town ? !(lit || hasSt || view.s > 30 || (c.tier === 2 && view.s > 22) || ui.selCity === c.i || ui.draft.includes(c.i))
+                 : !(lit || pop >= 100 || view.s > 26 || ui.selCity === c.i || ui.draft.includes(c.i))) return;
+        const x = sx(c.lon), y = sy(c.lat), r = town ? 4 : 2.6 + Math.sqrt(G.popOf(c, G.ym(S.day).y))/6.5;
+        ctx.font = `${lit ? '600 ' : ''}${town ? 11 : pop >= 300 ? 13 : 12}px ${P.font}`;
+        ctx.lineWidth = 3; ctx.strokeStyle = P.halo; ctx.strokeText(c.name, x + r + 4, y);
+        ctx.fillStyle = lit ? P.labelLit : P.label; ctx.fillText(c.name, x + r + 4, y);
+      });
+      ctx.textBaseline = 'alphabetic';
+    }
+    // 浮动收入
+    ctx.font = '600 11px ' + 'Menlo, monospace';
+    ui.floaters = ui.floaters.filter(f => now - f.t0 < 1600);
+    ui.floaters.forEach(f => { const k = (now - f.t0)/1600; ctx.globalAlpha = 1 - k; ctx.fillStyle = f.amt >= 0 ? '#2f6b3f' : '#b3261e'; ctx.fillText((f.amt>=0?'+':'') + (f.amt/1e4).toFixed(1) + '万', f.x + 6, f.y - 8 - k*18); });
+    ctx.globalAlpha = 1;
+  }
+  // 本公司客货流量（按区段月运量）
+  function drawFlows(){
+    const S = G.S; const vol = {};
+    S.trains.forEach(t => { const e = G.econ[t.id]; if (!e || !e.plan.ok || !e.legLoad) return; const use = G.trainById[t.model].use;
+      e.plan.legs.forEach((l, k) => { const key = l.e; vol[key] = vol[key] || { pax:0, fr:0 }; vol[key][use === 'pax' ? 'pax' : 'fr'] += e.legLoad[k] * e.plan.trips; }); });
+    ctx.lineCap = 'butt';
+    Object.entries(vol).forEach(([ei, v]) => { const e = E[ei]; const a = C[e.a], b = C[e.b]; const x1 = sx(a.lon), y1 = sy(a.lat), x2 = sx(b.lon), y2 = sy(b.lat);
+      const L = Math.hypot(x2-x1, y2-y1) || 1, nx = -(y2-y1)/L, ny = (x2-x1)/L;
+      const wp = Math.min(16, Math.sqrt(v.pax) / 28), wf = Math.min(16, Math.sqrt(v.fr) / 32);
+      if (wp > 0.5){ ctx.strokeStyle = 'rgba(29,94,158,.55)'; ctx.lineWidth = wp; line(x1 + nx*(wp/2+1), y1 + ny*(wp/2+1), x2 + nx*(wp/2+1), y2 + ny*(wp/2+1)); }
+      if (wf > 0.5){ ctx.strokeStyle = 'rgba(150,80,20,.6)'; ctx.lineWidth = wf; line(x1 - nx*(wf/2+1), y1 - ny*(wf/2+1), x2 - nx*(wf/2+1), y2 - ny*(wf/2+1)); }
+    });
+    ctx.lineCap = 'round';
+  }
+  // 城市主要货源（小色块）
+  function drawIndustry(){
+    const y = G.ym(G.S.day).y;
+    C.forEach(c => { const sd = G.cargoSD(c, y); const top = CARGO_IDS.filter(g => g !== 'general').map(g => [g, sd.S[g]]).filter(x => x[1] > 2.5).sort((a,b) => b[1]-a[1]).slice(0,3);
+      if (!top.length) return; const x = sx(c.lon), yy = sy(c.lat);
+      top.forEach(([g, v], i) => { const r = Math.min(9, 2.5 + Math.sqrt(v)); ctx.beginPath(); ctx.arc(x - 10 - i*(r*2+2), yy - 9, r, 0, Math.PI*2); ctx.fillStyle = CARGO[g].color; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; ctx.strokeStyle = '#f3e7c9'; ctx.lineWidth = 1; ctx.stroke(); });
+    });
+  }
+  function poly(pts, fill, stroke){ ctx.beginPath(); pts.forEach((p,k) => k ? ctx.lineTo(sx(p[0]),sy(p[1])) : ctx.moveTo(sx(p[0]),sy(p[1]))); ctx.closePath(); if (fill){ ctx.fillStyle = fill; ctx.fill(); } if (stroke){ ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); } }
+  function line(x1,y1,x2,y2){ ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
+  function pathStops(stops){ ctx.beginPath(); stops.forEach((c,k) => k ? ctx.lineTo(sx(C[c].lon), sy(C[c].lat)) : ctx.moveTo(sx(C[c].lon), sy(C[c].lat))); ctx.stroke(); }
+
+  const trainPos = {};
+  function drawTrains(now){
+    const S = G.S;
+    S.trains.forEach(t => {
+      delete trainPos[t.id];
+      if (t.status !== 'run') return; const e = G.econ[t.id]; if (!e || !e.plan || !e.plan.ok) return;
+      const r = S.routes.find(r => r.id === t.route); if (!r) return;
+      const p = e.plan; let legs = p.legs; if (t.dir) legs = legs.slice().reverse().map(l => Object.assign({}, l, { from:l.to, to:l.from }));
+      let tt = (t.phase||0) - 0.6; let x, y, ang = 0;
+      if (tt <= 0){ const c = C[legs[0].from]; x = sx(c.lon); y = sy(c.lat); }
+      else {
+        let done = false;
+        for (let k = 0; k < legs.length; k++){
+          const l = legs[k];
+          if (tt <= l.h){ const a = C[l.from], b = C[l.to]; const f = tt / l.h; x = sx(a.lon) + (sx(b.lon)-sx(a.lon))*f; y = sy(a.lat) + (sy(b.lat)-sy(a.lat))*f; ang = Math.atan2(sy(b.lat)-sy(a.lat), sx(b.lon)-sx(a.lon)); done = true; break; }
+          tt -= l.h;
+          if (k < legs.length-1){ if (tt <= p.dwell){ const c = C[l.to]; x = sx(c.lon); y = sy(c.lat); done = true; break; } tt -= p.dwell; }
+        }
+        if (!done){ const c = C[legs[legs.length-1].to]; x = sx(c.lon); y = sy(c.lat); }
+      }
+      trainPos[t.id] = { x, y };
+      const m = G.trainById[t.model];
+      ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+      const L = m.type === 'emu' ? 13 : 10;
+      ctx.fillStyle = r.color; ctx.strokeStyle = '#0b1220'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(-L/2, -3.2, L, 6.4, m.type==='emu'?3:1.5); else ctx.rect(-L/2,-3.2,L,6.4); ctx.fill(); ctx.stroke();
+      if (m.use === 'freight'){ ctx.fillStyle = '#0b1220'; ctx.fillRect(-1, -3.2, 1.4, 6.4); }
+      ctx.restore();
+    });
+    // 新事件 → 浮动文字
+    const evs = G.events; for (const ev of evs){ if (ev.at > ui.lastEvt){ const p = trainPos[ev.t]; if (p && ui.speed <= 3) ui.floaters.push({ x:p.x, y:p.y, amt:ev.amt, t0:performance.now() }); } }
+    if (evs.length) ui.lastEvt = evs[evs.length-1].at;
+  }
+
+  // 地图交互
+  let drag = null;
+  cv.addEventListener('mousedown', e => { drag = { x:e.clientX, y:e.clientY, ox:view.ox, oy:view.oy, moved:false }; });
+  window.addEventListener('mousemove', e => { if (!drag) return; const dx = e.clientX-drag.x, dy = e.clientY-drag.y; if (Math.abs(dx)+Math.abs(dy) > 4){ drag.moved = true; cv.classList.add('drag'); } if (drag.moved){ view.ox = drag.ox + dx; view.oy = drag.oy + dy; } });
+  window.addEventListener('mouseup', e => { if (!drag) return; const d = drag; drag = null; cv.classList.remove('drag'); if (!d.moved && e.target === cv) mapClick(e); });
+  // 触屏：单指拖动，双指缩放，轻点选择
+  let tch = null;
+  const tpts = e => [...e.touches].map(t => ({ x:t.clientX, y:t.clientY }));
+  cv.addEventListener('touchstart', e => { e.preventDefault(); const p = tpts(e);
+    if (p.length === 1) tch = { mode:'pan', x:p[0].x, y:p[0].y, ox:view.ox, oy:view.oy, moved:false, t:performance.now() };
+    else if (p.length >= 2) { const r = cv.getBoundingClientRect(); tch = { mode:'pinch', d:Math.hypot(p[0].x-p[1].x, p[0].y-p[1].y), s:view.s, ox:view.ox, oy:view.oy, mx:(p[0].x+p[1].x)/2 - r.left, my:(p[0].y+p[1].y)/2 - r.top, moved:true }; } }, { passive:false });
+  cv.addEventListener('touchmove', e => { e.preventDefault(); if (!tch) return; const p = tpts(e);
+    if (tch.mode === 'pan' && p.length === 1){ const dx = p[0].x-tch.x, dy = p[0].y-tch.y; if (Math.abs(dx)+Math.abs(dy) > 8) tch.moved = true; if (tch.moved){ view.ox = tch.ox + dx; view.oy = tch.oy + dy; } }
+    else if (tch.mode === 'pinch' && p.length >= 2){ const r = cv.getBoundingClientRect(); const d = Math.hypot(p[0].x-p[1].x, p[0].y-p[1].y); const mx = (p[0].x+p[1].x)/2 - r.left, my = (p[0].y+p[1].y)/2 - r.top;
+      const ns = Math.max(8, Math.min(72, tch.s * d / Math.max(10, tch.d))); const k = ns / tch.s;
+      view.s = ns; view.ox = mx - (tch.mx - tch.ox)*k; view.oy = my - (tch.my - tch.oy)*k; } }, { passive:false });
+  cv.addEventListener('touchend', e => { e.preventDefault(); if (!tch) return;
+    if (tch.mode === 'pan' && !tch.moved && !e.touches.length) mapClick({ clientX:tch.x, clientY:tch.y, target:cv });
+    if (!e.touches.length) tch = null; else if (e.touches.length === 1){ const p = tpts(e); tch = { mode:'pan', x:p[0].x, y:p[0].y, ox:view.ox, oy:view.oy, moved:true }; } }, { passive:false });
+  cv.addEventListener('touchcancel', () => { tch = null; });
+  if (window.ResizeObserver) new ResizeObserver(() => { const r = cv.getBoundingClientRect(); if (r.width && (Math.abs(r.width*DPR - cv.width) > 1 || Math.abs(r.height*DPR - cv.height) > 1)) resize(); }).observe($('#mapwrap'));
+  // 手机布局：地图 / 分屏 / 面板 三档
+  const SHEET = ['m-map', '', 'm-full']; let sheet = 1;
+  function setSheet(k){ sheet = Math.max(0, Math.min(2, k)); document.body.classList.remove('m-map','m-full'); if (SHEET[sheet]) document.body.classList.add(SHEET[sheet]); }
+  $('#bSheetUp').onclick = () => setSheet(sheet + 1);
+  $('#bSheetDn').onclick = () => setSheet(sheet - 1);
+  $('#bMenu').onclick = e => { e.stopPropagation(); $('#top').classList.toggle('menu'); };
+  document.addEventListener('click', e => { if (!e.target.closest('.topbtns')) $('#top').classList.remove('menu'); });
+  $('#top').querySelector('.topbtns').addEventListener('click', () => $('#top').classList.remove('menu'));
+  ui.setSheet = setSheet; ui.sheet = () => sheet;
+  cv.addEventListener('wheel', e => { e.preventDefault(); const r = cv.getBoundingClientRect(); zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1/1.15); }, { passive:false });
+  function zoomAt(px, py, k){ const ns = Math.max(8, Math.min(72, view.s * k)); k = ns / view.s; view.ox = px - (px - view.ox)*k; view.oy = py - (py - view.oy)*k; view.s = ns; }
+  document.querySelectorAll('#zoom button').forEach(b => b.onclick = () => { const z = +b.dataset.z; const r = cv.getBoundingClientRect(); if (!z) fit(); else zoomAt(r.width/2, r.height/2, z); });
+  function hit(mx, my){
+    const TT = matchMedia('(pointer:coarse)').matches; let best = null, bd = TT ? 24 : 14;
+    C.forEach(c => { const d = Math.hypot(sx(c.lon)-mx, sy(c.lat)-my); if (d < bd){ bd = d; best = { city:c.i }; } });
+    if (best) return best;
+    let be = null, bed = TT ? 14 : 7;
+    E.forEach(e => { if (e.sup && !edgeTracks(e).length) return; const a = C[e.a], b = C[e.b]; const d = segDist(mx,my,sx(a.lon),sy(a.lat),sx(b.lon),sy(b.lat)); if (d < bed){ bed = d; be = { edge:e.i }; } });
+    return be;
+  }
+  function segDist(px,py,x1,y1,x2,y2){ const dx=x2-x1, dy=y2-y1; const t = Math.max(0, Math.min(1, ((px-x1)*dx+(py-y1)*dy)/(dx*dx+dy*dy))); return Math.hypot(px-(x1+t*dx), py-(y1+t*dy)); }
+  function mapClick(e){
+    const r = cv.getBoundingClientRect(); const h = hit(e.clientX - r.left, e.clientY - r.top);
+    if (ui.mode === 'route'){
+      if (!h || h.city === undefined) return;
+      const c = h.city;
+      if (!ui.draft.length){ ui.draft.push(c); renderRouteBar(); return; }
+      const last = ui.draft[ui.draft.length-1];
+      if (c === last) return;
+      if (ui.draft.length >= 2 && c === ui.draft[ui.draft.length-2]){ ui.draft.pop(); renderRouteBar(); return; }
+      if (ui.draft.includes(c)) return toast('不能重复经过同一车站', '一条运营线路中每座城市只能停靠一次。', 'bad');
+      if (G.edgeByPair[last+'-'+c] && G.routeAllowed(last, c)){ ui.draft.push(c); renderRouteBar(); return; }
+      const path = G.findPath(last, c, ui.draft);
+      if (!path) return toast('找不到可通行的轨道', `${C[last].name} 到 ${C[c].name} 之间没有连通的已建线路。可在「建设」页修建。`, 'bad');
+      path.slice(1).forEach(v => ui.draft.push(v)); renderRouteBar(); return;
+    }
+    if (!h){ ui.selCity = null; ui.selEdge = null; renderInspector(); return; }
+    if (h.city !== undefined){ ui.selCity = h.city; ui.selEdge = null; }
+    else { ui.selEdge = h.edge; ui.selCity = null; ui.tab = 'build'; renderTabs(); renderPanel(true); }
+    renderInspector();
+  }
+
+  // ---------------- 顶栏 ----------------
+  function eraName(y){ return y < 1992 ? '改革开放 · 试点阶段' : y < 2001 ? '市场化改革 · 提速年代' : y < 2008 ? '入世 · 跨越发展' : y < 2016 ? '高铁时代' : '新时代 · 复兴'; }
+  function renderTop(){
+    const S = G.S; const d = G.dateOf(S.day);
+    $('#date').textContent = `${d.getFullYear()}年${String(d.getMonth()+1).padStart(2,'0')}月${String(d.getDate()).padStart(2,'0')}日`;
+    $('#era').textContent = eraName(d.getFullYear());
+    $('#coName').textContent = S.company;
+    $('#kCash').textContent = W(S.cash); $('#kCash').className = S.cash < 0 ? 'neg' : '';
+    $('#kDebt').textContent = W(S.debt + (S.bonds || []).reduce((a, b) => a + b.amt, 0)); $('#kDebt').title = `银行借款 ${W(S.debt)}元 · 企业债 ${W((S.bonds || []).reduce((a, b) => a + b.amt, 0))}元`;
+    $('#kWorth').textContent = W(G.netWorth());
+    const h = S.history[S.history.length-1]; const net = h ? h.net : 0;
+    $('#kNet').textContent = (net>=0?'+':'') + W(net); $('#kNet').className = net >= 0 ? 'pos' : 'neg';
+    $('#kLit').textContent = `${Object.keys(S.lit).length} / ${C.length}`;
+    document.querySelectorAll('#speed button').forEach(b => b.classList.toggle('on', +b.dataset.s === ui.speed));
+  }
+  document.querySelectorAll('#speed button').forEach(b => b.onclick = () => setSpeed(+b.dataset.s));
+  function setSpeed(s){ ui.speed = s; if (s) ui.lastSpeed = s; renderTop(); }
+  window.addEventListener('keydown', e => {
+    if (['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+    if (e.code === 'Space'){ e.preventDefault(); setSpeed(ui.speed ? 0 : ui.lastSpeed || 1); }
+    if (e.key >= '1' && e.key <= '4') setSpeed(+e.key);
+    if (e.key === 'Escape'){ if (ui.mode === 'route') cancelRoute(); else { ui.selCity = ui.selEdge = null; renderInspector(); } }
+  });
+
+  // 地图图层开关与图例
+  function renderTools(){
+    const L = ui.layers; const it = [['state','国铁线路'],['rivals','同业线路'],['cand','规划走廊'],['trains','列车'],['labels','城市名'],['flow','客货流量'],['industry','城市产业']];
+    $('#maptools').innerHTML = it.map(([k,n]) => `<button class="chip ${L[k]?'on':''}" data-layer="${k}">${n}</button>`).join('');
+    $('#maptools').querySelectorAll('button').forEach(b => b.onclick = () => { L[b.dataset.layer] = !L[b.dataset.layer]; renderTools(); });
+    const extraLeg = (L.flow ? `<div><i style="background:rgba(29,94,158,.6);height:5px"></i>本公司客流</div><div><i style="background:rgba(140,82,30,.6);height:5px"></i>本公司货流</div>` : '')
+      + (L.industry ? CARGO_IDS.filter(g => g !== 'general').map(g => `<div><i style="background:${CARGO[g].color};height:8px;width:8px;border-radius:50%"></i>产${CARGO[g].name}</div>`).join('') : '');
+    $('#legend').innerHTML = extraLeg + `
+      <div><i style="background:${P.own};height:4px"></i>自有线路</div>
+      <div><i style="background:${P.state}"></i>国铁（非电化）</div>
+      <div><i style="background:${P.stateElec}"></i>国铁（电气化）</div>
+      <div><i style="background:${P.stateHsr};height:4px;box-shadow:inset 0 0 0 1px #fff"></i>高速铁路</div>
+      ${RIVALS.map(r => `<div><i style="background:${r.color}"></i>${r.name}</div>`).join('')}
+      <div><i style="background:repeating-linear-gradient(90deg,#aaa 0 5px,transparent 5px 9px)"></i>在建</div>
+      <div><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${P.cityLit};box-shadow:0 0 8px ${P.cityLit};margin:0 6px 0 6px"></span>已点亮城市</div>`;
+  }
+
+  // ---------------- 检查器（地图浮窗） ----------------
+  function cityEconBox(c, y){
+    const S = G.S; const sd = G.cargoSD(c, y); const pop = G.popOf(c, y); const lv = cityLevel(pop);
+    const b = (S.boost||{})[c.i] || 0; const tr = (S.cityTrips||{})[c.i] || 0;
+    const fmt = o => CARGO_IDS.map(g => [g, o[g]]).filter(x => x[1] >= 1).sort((a,b) => b[1]-a[1]).slice(0,4)
+      .map(([g,v]) => `<span class="tag" style="border-color:${CARGO[g].color};color:${CARGO[g].color}">${CARGO[g].name} ${v.toFixed(0)}</span>`).join(' ') || '<span class="dim">—</span>';
+    return `<div class="row sb" style="margin-top:8px"><span><b>${CITY_LEVELS[lv][1]}</b>${lv < CITY_LEVELS.length-1 ? `<span class="dim">（${CITY_LEVELS[lv+1][0]} 万人升级为${CITY_LEVELS[lv+1][1]}）</span>` : ''}</span>
+      <span class="dim">铁路带动人口 ${b > 0 ? '<span class="pos">+' + (b*100).toFixed(1) + '%</span>' : '—'}${tr ? ` · 月停站 ${tr.toFixed(0)} 次` : ''}</span></div>
+      <div style="margin-top:6px;font-size:12px"><span class="dim">发送货物：</span>${fmt(sd.S)}</div>
+      <div style="margin-top:4px;font-size:12px"><span class="dim">到达需求：</span>${fmt(sd.D)}</div>`;
+  }
+  function stationBox(c){
+    const S = G.S; const st = S.stations[c.i]; const lv = st ? st.lv : 0;
+    let h = `<h3>车站 · ${c.tier === 2 ? '二线城市' : '三线城市'}</h3>`;
+    h += `<div class="row sb"><div>${lv ? `<b>${c.name}站</b> <span class="tag gold">${STATION_LEVELS[lv].name}</span>` : '<span class="tag">尚未开站</span>'}
+      ${st && st.pend ? ` <span class="tag blue">施工中 → ${STATION_LEVELS[st.pend.lv].name} · ${Math.max(0,Math.ceil((st.pend.done-S.day)/30))}个月</span>` : ''}</div>
+      ${lv ? `<span class="num muted">月客流 ${((st.load||0)/1e4).toFixed(1)} / ${STATION_LEVELS[lv].paxCap*2} 万人次</span>` : ''}</div>`;
+    if (lv && st.util > 1) h += `<div class="neg" style="font-size:12px;margin-top:4px">车站能力已饱和（${Math.round(st.util*100)}%），扩建可多收旅客。</div>`;
+    h += `<table class="t" style="margin-top:6px">` + [1,2,3].map(L => { const D = STATION_LEVELS[L]; const q = G.stationQuote(c.i, L); const done = lv >= L; const busy = st && st.pend;
+      return `<tr><td><b>${D.name}</b><br><span class="dim">${D.desc}；客流上限 ${D.paxCap*2} 万人次/月${D.freight?'':'；不办货运'}</span></td>
+        <td class="num r">${done ? '<span class="dim">已建</span>' : fmtY(q.cost) + `<br><span class="dim">${q.months} 个月</span>`}</td>
+        <td>${done ? '' : `<button class="btn sm ${L===lv+1?'primary':''}" data-act="station" data-c="${c.i}" data-lv="${L}" ${busy?'disabled':''}>${lv ? '扩建' : '开站'}</button>`}</td></tr>`; }).join('') + `</table>`;
+    h += `<div class="dim" style="font-size:11px;margin-top:4px">小城市客流不大，但在本公司枢纽换乘其他线路时客流有接驳加成，车站等级越高加成越大。</div>`;
+    return h;
+  }
+  function renderInspector(){
+    const box = $('#inspector'); const S = G.S; const y = G.ym(S.day).y;
+    if (ui.selCity !== null && ui.selCity !== undefined){
+      const c = C[ui.selCity]; const pop = G.popOf(c, y);
+      const conns = G.adj[c.i].map(e => { const o = e.a===c.i ? e.b : e.a; const ts = edgeTracks(e); return { o, e, ts }; });
+      const dem = C.filter(o => o.i !== c.i).map(o => { const d = Math.round(hav(c, o)*1.2); return { o, d, D: G.paxDemand(c.i, o.i, d, y, 70) }; }).sort((a,b) => b.D - a.D).slice(0,5);
+      const routes = S.routes.filter(r => r.stops.includes(c.i));
+      box.innerHTML = `<button class="x" data-close>×</button>
+        <h2>${c.name} ${S.lit[c.i] ? '<span class="tag gold">已点亮</span>' : '<span class="tag">未点亮</span>'} ${c.tag ? `<span class="tag ${c.tag==='特区'?'red':'blue'}">${c.tag}</span>`:''}</h2>
+        <div class="grid3">
+          <div class="stat"><label>市区人口</label><b>${pop.toFixed(0)}</b><small> 万</small></div>
+          <div class="stat"><label>货运指数</label><b>${G.freightOf(c, y).toFixed(1)}</b></div>
+          <div class="stat"><label>地区</label><b style="font-size:14px">${c.region}</b></div>
+        </div>
+        ${cityEconBox(c, y)}
+        ${cityEstateBox(c, y)}
+        ${c.tier > 1 ? stationBox(c) : `<div class="dim" style="font-size:11px;margin-top:6px">大城市可直接使用国铁车站，无需自建。</div>` + depotBox(c)}
+        <h3>相邻走廊 <span class="dim" style="font-weight:400">（点击查看或修建）</span></h3>
+        <table class="t">${conns.map(x => `<tr style="cursor:pointer" data-act="selEdge" data-e="${x.e.i}" title="查看/修建该走廊"><td>→ ${C[x.o].name}</td><td class="num r">${x.e.dist} km</td><td>${x.ts.length ? x.ts.map(t => `<span class="swatch" style="background:${ownerColor(t.owner)}" title="${ownerName(t.owner)}"></span>`).join('') + `<span class="dim">${Math.max(...x.ts.map(t=>t.v))} km/h</span>` : '<span class="dim">未建</span>'}</td></tr>`).join('')}</table>
+        <h3>客流潜力最高的目的地（月客流，全方式）</h3>
+        <table class="t">${dem.map(x => `<tr><td>${x.o.name}</td><td class="num r">${x.d} km</td><td class="num r">${(x.D/1e4).toFixed(1)} 万人次</td></tr>`).join('')}</table>
+        ${routes.length ? `<h3>途经本站的线路</h3>${routes.map(r => `<div class="row"><span class="swatch" style="background:${r.color}"></span>${esc(r.name)}</div>`).join('')}` : ''}
+        <div class="sep"></div>
+        <button class="btn primary sm" data-act="routeFrom" data-c="${c.i}">以此为起点新建运营线路</button>`;
+      box.classList.add('show');
+    } else if (ui.selEdge !== null && ui.selEdge !== undefined){
+      const e = E[ui.selEdge]; const ts = edgeTracks(e);
+      box.innerHTML = `<button class="x" data-close>×</button>
+        <h2>${C[e.a].name} — ${C[e.b].name}</h2>
+        <div class="muted">${e.dist} km · 地形系数 ${e.terrain}${(()=>{ const h = HexMap.edgeTerrain(C[e.a], C[e.b]); return ` · 沿线地形 ×${h.factor}（最难路段：${h.worst}）`; })()}${e.plateau ? ' · <span class="gold">高原线路</span>' : ''}${e.line ? ' · ' + e.line : ''}</div>
+        <table class="t" style="margin-top:8px"><tr><th>产权</th><th class="r">速度</th><th>电气化</th><th class="r">过轨费(客)</th></tr>
+        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${ownerName(t.owner)}${t.status==='build'?' <span class="tag">在建</span>':''}</td><td class="num r">${t.v}</td><td>${t.elec?'是':'否'}</td><td class="num r">${t.owner==='P'?'—':G.feeRate(t,'pax',G.ym(S.day).y).toFixed(0)+' 元/列km'}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">尚无线路，可抢先修建</td></tr>'}
+        </table><div class="sep"></div><div class="muted">修建或改造请在右侧「建设」页操作。</div>`;
+      box.classList.add('show');
+    } else box.classList.remove('show');
+  }
+  function hav(a,b){ const R=6371,t=Math.PI/180; const dLa=(b.lat-a.lat)*t, dLo=(b.lon-a.lon)*t; const x=Math.sin(dLa/2)**2+Math.cos(a.lat*t)*Math.cos(b.lat*t)*Math.sin(dLo/2)**2; return 2*R*Math.asin(Math.sqrt(x)); }
+  $('#inspector').addEventListener('click', e => { if (e.target.closest('[data-close]')){ ui.selCity = ui.selEdge = null; renderInspector(); return; } act(e); });
+
+  // ---------------- 新建线路 ----------------
+  function startRoute(first){ ui.mode = 'route'; ui.draft = first !== undefined ? [first] : []; ui.selCity = ui.selEdge = null; renderInspector(); cv.classList.add('routing'); renderRouteBar(); }
+  function cancelRoute(){ ui.mode = 'view'; ui.draft = []; cv.classList.remove('routing'); renderRouteBar(); }
+  function renderRouteBar(){
+    const b = $('#routebar');
+    if (ui.mode !== 'route'){ b.classList.remove('show'); return; }
+    if (ui.sheet && ui.sheet() === 2) ui.setSheet(1);
+    let dist = 0; for (let k = 0; k < ui.draft.length-1; k++) dist += G.edgeByPair[ui.draft[k]+'-'+ui.draft[k+1]].dist;
+    b.innerHTML = `<b class="gold">新建运营线路</b>
+      <div class="stops">${ui.draft.length ? (() => { const st = G.stopFlags({ stops:ui.draft }); return ui.draft.map((c,k) => (k?'<span class="arr">▶</span>':'') + `<span class="s${st[k]?'':' pass'}" title="${st[k]?'停靠':'未开站，列车通过不停'}">${C[c].name}</span>`).join(''); })() : '<span class="muted">点击起点城市，再点击下一座目的城市（可跨越多站，自动沿已建轨道寻路）</span>'}</div>
+      ${ui.draft.length > 1 ? `<span class="num muted">${dist} km</span>` : ''}
+      <button class="btn sm" data-rb="undo">撤销</button><button class="btn sm" data-rb="cancel">取消</button>
+      <button class="btn sm primary" data-rb="ok" ${ui.draft.length < 2 ? 'disabled' : ''}>完成</button>`;
+    b.classList.add('show');
+    b.querySelectorAll('[data-rb]').forEach(x => x.onclick = () => {
+      const k = x.dataset.rb;
+      if (k === 'undo'){ ui.draft.pop(); renderRouteBar(); }
+      if (k === 'cancel') cancelRoute();
+      if (k === 'ok'){ const r = G.createRoute(ui.draft); ui.selRoute = r.id; cancelRoute(); ui.tab = 'routes'; renderTabs(); renderPanel(true); toast('线路已创建', `${r.name}。现在可以为它购买或分配列车。`, 'good'); snd('horn'); }
+    });
+  }
+
+  // ---------------- 面板 ----------------
+  const TABS = [['overview','总览'],['build','建设'],['routes','线路'],['fleet','车队'],['market','购车'],['contracts','合同'],['estate','产业'],['mgmt','管理'],['finance','财务'],['policy','政策'],['projects','项目'],['rivals','同业']];
+  function renderTabs(){ $('#tabs').innerHTML = TABS.map(([k,n]) => `<button class="${ui.tab===k?'on':''}" data-tab="${k}">${n}</button>`).join('');
+    { const tb = $('#tabs'), on = tb.querySelector('.on'); if (on && tb.scrollWidth > tb.clientWidth) tb.scrollLeft = Math.max(0, on.offsetLeft - (tb.clientWidth - on.offsetWidth)/2); }
+    $('#tabs').querySelectorAll('button').forEach(b => b.onclick = () => { ui.tab = b.dataset.tab; if (ui.sheet && ui.sheet() === 0) ui.setSheet(1); renderTabs(); renderPanel(true); $('#panelBody').scrollTop = 0; }); }
+  function signature(){ const S = G.S; return [ui.tab, S.lastYM, S.trains.map(t => t.status + t.route).join(','), S.tracks.filter(t => t.status==='ok').length, S.tracks.length, S.routes.length, S.tracks.filter(t=>t.upg).length, (S.offers||[]).length, (S.contracts||[]).length, (S.bonds||[]).length, !!S.ipo, S.ipo ? S.ipo.payoutLv : '', S.rivals.filter(r=>r.acquired).length, S.routes.map(r=>r.svc).join(''), S.tracks.filter(t=>t.sigUpg).length, (S.locals||[]).length, JSON.stringify(S.biz||{}), JSON.stringify(S.land||{}), S.routes.map(r=>r.slow?1:0).join(''), JSON.stringify(S.execs||{}), (S.cands||[]).length, S.trainLv||0, JSON.stringify(S.rd||{}), (S.gov||[]).map(g=>g.id+g.st).join(','), (S.wars||[]).map(w=>w.rid+(w.resp||'')+(w.ended?'x':'')).join(','), S.rivals.map(r=>(r.plan?r.plan.e:'')+':'+Math.round((r.stake||0)/1e6)).join(','), S.ipo?S.ipo.shares:0, JSON.stringify((S.franch||[]).map(f=>[f.uid,f.st,f.bid,f.holder])), JSON.stringify(S.supers||{}).length, (S.overseas||[]).map(x=>x.id+x.st).join(','), (S.depots||[]).map(d=>d.ci+':'+d.lv+(d.pend?'p':'')).join(','), S.routes.map(r=>r.grade||'').join(''), (S.usedOffers||[]).map(o=>o.id).join(',')].join('|'); }
+  function renderPanel(force){
+    const sig = signature();
+    if (!force){ if (sig === ui.sig) return; const ae = document.activeElement; if (ae && $('#panelBody').contains(ae) && ['SELECT','INPUT'].includes(ae.tagName)) return; }
+    ui.sig = sig;
+    const body = $('#panelBody'); const st = body.scrollTop;
+    body.innerHTML = ({ overview:pOverview, build:pBuild, routes:pRoutes, fleet:pFleet, market:pMarket, contracts:pContracts, estate:pEstate, mgmt:pMgmt, finance:pFinance, policy:pPolicy, projects:pProjects, rivals:pRivals })[ui.tab]();
+    body.scrollTop = st;
+    if (ui.tab === 'finance'){ requestAnimationFrame(drawFinanceCharts); setTimeout(drawFinanceCharts, 60); setTimeout(drawStockChart, 70); }
+    if (ui.tab === 'overview'){ requestAnimationFrame(drawMiniChart); setTimeout(drawMiniChart, 60); }
+  }
+
+  // —— 总览 ——
+  function pOverview(){
+    const S = G.S; const y = G.ym(S.day).y;
+    const own = S.tracks.filter(t => t.owner==='P');
+    const km = own.filter(t => t.status==='ok').reduce((a,t) => a + E[t.e].dist, 0);
+    const regions = {}; C.forEach(c => { regions[c.region] = regions[c.region] || { n:0, lit:0 }; regions[c.region].n++; if (S.lit[c.i]) regions[c.region].lit++; });
+    const h = S.history[S.history.length-1];
+    const runCount = S.trains.filter(t => t.status==='run').length;
+    const guide = !S.routes.length || !S.trains.length;
+    return `
+      <h2>${esc(S.company)} <span class="tag gold">${y}年</span></h2>
+      ${scnBox()}
+      ${guide ? `<div class="hint"><b>开局指南</b><br>
+        ① 打开「线路」页，点击 <b>新建运营线路</b>，在地图上点起点和终点城市，系统自动沿已建轨道寻路（可直接使用国铁线路，按列·公里付过轨费）。<br>
+        ② 打开「购车」页挑选车型并分配到线路，交付后自动开行，沿线城市随之 <b>点亮</b>。<br>
+        ③ 在「车队」关注载客率与单车利润；客流旺的干线越早进入越好。<br>
+        ④ 点击地图上的走廊，在「建设」页修建 <b>自有线路</b>：省下过轨费，还能向国铁和同业收取过轨费。<br>
+        ⑤ 政策会随年代推进解锁快速线、高速线与进口车型。空格键暂停，1–4 调整速度。</div><div style="height:10px"></div>` : ''}
+      <div class="grid3">
+        <div class="stat"><label>运营线路</label><b>${S.routes.length}</b><small> 条</small></div>
+        <div class="stat"><label>列车（运营/总数）</label><b>${runCount}/${S.trains.length}</b></div>
+        <div class="stat"><label>自有线路</label><b>${km.toLocaleString()}</b><small> km</small></div>
+        <div class="stat"><label>上月客运量</label><b>${h ? (h.paxN/1e4).toFixed(1) : '0'}</b><small> 万人次</small></div>
+        <div class="stat"><label>上月货运量</label><b>${h ? (h.tons/1e4).toFixed(1) : '0'}</b><small> 万吨</small></div>
+        <div class="stat"><label>上月收入</label><b>${h ? W(h.rev) : '0'}</b></div>
+      </div>
+      <h3>净资产走势</h3><canvas class="chart" id="miniChart" style="height:120px"></canvas>
+      <h3>点亮地图 · 地区进度</h3>
+      ${Object.entries(regions).map(([k,v]) => `<div class="region"><span>${k}</span><div class="bar"><i style="width:${v.lit/v.n*100}%"></i></div><span class="num r muted">${v.lit}/${v.n}</span></div>`).join('')}
+      <h3>成就</h3>
+      ${G.ACH.map(a => `<div class="ach ${S.achievements[a.id]?'on':''}"><span class="ic">${S.achievements[a.id]?'★':'☆'}</span><div><b>${a.name}</b> <span class="muted">${a.desc}</span></div><span class="num dim" style="margin-left:auto">${S.achievements[a.id]||''}</span></div>`).join('')}
+      <h3>大事记</h3>
+      <div class="newslist">${S.news.slice(0,14).map(n => `<div class="n ${n.kind}"><span class="d">${n.date}</span><b>${esc(n.title)}</b><div class="muted">${esc(n.text)}</div></div>`).join('')}</div>`;
+  }
+  function drawMiniChart(){ const c = $('#miniChart'); if (!c) return; const H = G.S.history.slice(-60);
+    chart(c, H.map(h => `${h.y}.${h.m}`), [{ name:'净资产', color:P.own, data:H.map(h => h.worth), fill:true }]); }
+
+  function signalHTML(tr){ const cur = G.sigOf(tr); const u = G.trackUtil[tr.id];
+    return `<h3>信号与通过能力</h3><div class="card"><dl class="kv"><dt>当前信号</dt><dd>${G.SIGNALS[cur].name}${tr.sigUpg ? ` <span class="tag blue">改造中 · ${Math.max(0,Math.ceil((tr.sigUpg.done-G.S.day)/30))}个月</span>` : ''}</dd>
+      <dt>通过能力</dt><dd>${G.capOf(tr)} 列/日</dd>${u ? `<dt>当前利用率</dt><dd>${utilTag(tr.id)}（本公司 ${u.own.toFixed(1)} + 过轨 ${u.bg.toFixed(1)} 列/日）</dd>` : ''}</dl>
+      ${G.SIGNALS.filter(x => x.id > cur).map(x => { const q = G.signalQuote(tr.id, x.id); return `<div class="row sb" style="padding:6px 0;border-top:1px solid var(--line)"><div><b>${x.name}</b> <span class="dim">${x.cap} 列/日 · ${x.desc}</span>${q.ok ? '' : `<br><span class="dim">${x.from} 年起可用</span>`}</div><div class="row"><span class="num">${q.ok ? fmtY(q.cost) : '—'}</span><button class="btn sm" data-act="signal" data-tr="${tr.id}" data-v="${x.id}" ${q.ok && !tr.sigUpg ? '' : 'disabled'}>改造</button></div></div>`; }).join('')}
+      <div class="dim" style="font-size:11px;margin-top:4px">利用率超过 72% 开始晚点，超过 100% 严重拥堵：单程时间变长、每月趟数减少、正点率和满意度下降、事故风险上升。国铁线路的信号随年代自动升级。</div></div>`; }
+
+  // —— 建设 ——
+  function pBuild(){
+    const S = G.S; const y = G.ym(S.day).y;
+    let html = '';
+    if (ui.selEdge === null || ui.selEdge === undefined){
+      html += `<div class="hint">在地图上 <b>点击两座城市之间的走廊</b>（实线为已建线路，虚线为可修建的走廊）以查看修建与改造选项。<br>拥有自有线路后，自己的列车免交过轨费，国铁与同业列车经过时还会向你付费。</div>`;
+    } else {
+      const e = E[ui.selEdge]; const ts = edgeTracks(e); const mine = ts.find(t => t.owner==='P');
+      html += `<h2>${C[e.a].name} — ${C[e.b].name} <span class="tag">${e.dist} km</span></h2>
+        <div class="muted" style="margin-bottom:8px">地形系数 ${e.terrain}${e.west ? ' · 中西部' : ''}${e.plateau ? ' · <span class="gold">高原线路（需高原型机车）</span>' : ''}</div>
+        <table class="t"><tr><th>产权方</th><th class="r">最高速度</th><th>电气化</th><th class="r">过轨费 客/货</th></tr>
+        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${ownerName(t.owner)} ${t.status==='build'?`<span class="tag">在建 · ${Math.max(0,Math.ceil((t.done-S.day)/30))}个月</span>`:''}${t.upg?`<span class="tag blue">改造中</span>`:''}</td><td class="num r">${t.v} km/h</td><td>${t.elec?'✓':'—'}</td><td class="num r">${G.feeRate(t,'pax',y).toFixed(0)} / ${G.feeRate(t,'freight',y).toFixed(0)}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">该走廊尚无任何线路 —— 抢先修建可独享并收取过轨费</td></tr>'}
+        </table><div class="dim" style="font-size:11px;margin-top:4px">过轨费单位：元/列·公里（按当年物价）</div>`;
+      if (!mine){
+        html += `<h3>修建自有线路</h3><div class="card">` + G.TRACK_CLASSES.map(cl => {
+          const ok = G.canBuildClass(cl.id); const q = G.buildQuote(e, cl.id, cl.id >= 2 || ui.bElec);
+          const pol = G.policyById[cl.unlock];
+          return `<label class="row" style="padding:6px 0;border-bottom:1px solid var(--line);${ok?'':'opacity:.45'}">
+            <input type="radio" name="bCls" value="${cl.id}" ${ok?'':'disabled'} ${ ((ui.bCls||0)===cl.id && ok) ? 'checked':''} data-act="bCls">
+            <div style="flex:1"><b>${cl.name}</b> <span class="dim">${cl.desc}</span>${ok?'':`<br><span class="dim">需政策：${pol.title}（${pol.y}年）</span>`}</div>
+            <div class="num r">${ok ? fmtY(q.cost) : '—'}<br><span class="dim">${ok ? q.months + ' 个月' : ''}</span></div></label>`; }).join('') +
+          `<label class="row" style="margin-top:8px"><input type="checkbox" data-act="bElec" ${ui.bElec?'checked':''}> 同步电气化（电力机车、动车组必需；高速线默认电气化）</label>
+          ${(() => { const q = G.buildQuote(e, ui.bCls||0, (ui.bCls||0) >= 2 || ui.bElec); return `<div class="kv" style="margin-top:8px"><dt>单价</dt><dd>${(q.unit).toFixed(1)} 万元/km</dd><dt>补贴</dt><dd>${pct(q.sub)}</dd><dt>总投资</dt><dd class="gold">${fmtY(q.cost)}</dd><dt>可用现金</dt><dd>${fmtY(S.cash)}</dd></div>`; })()}
+          ${(() => { const q = G.buildQuote(e, ui.bCls||0, (ui.bCls||0) >= 2 || ui.bElec); return fundBtn(q.cost, `data-act="build" data-e="${e.i}"`, '开工建设（仅本区段）', 'btn primary', 'margin-top:10px;width:100%'); })()}
+          ${(() => { const g = G.groups[e.grp]; if (!g || g.edges.length < 2) return ''; const q = G.groupQuote(e.grp, ui.bCls||0, (ui.bCls||0) >= 2 || ui.bElec); if (q.segs.length < 2) return '';
+            return fundBtn(q.cost, `data-act="buildGrp" data-g="${g.i}"`, `整段修建 ${C[g.a].name}—${C[g.b].name}（${q.segs.length} 段 · ${q.km} km · ${fmtY(q.cost)} · ${q.months} 个月）`, 'btn', 'margin-top:6px;width:100%', true); })()}</div>`;
+      }
+      if (mine && mine.status === 'ok') html += signalHTML(mine);
+      if (mine && mine.status === 'ok' && !mine.upg){
+        html += `<h3>改造自有线路</h3><div class="card">` + G.TRACK_CLASSES.filter(cl => cl.v >= mine.v).map(cl => {
+          const ok = G.canBuildClass(cl.id); const q = G.upgradeQuote(mine, cl.id, cl.id >= 2 || mine.elec || ui.bElec);
+          const same = cl.v === mine.v;
+          return `<div class="row sb" style="padding:6px 0;border-bottom:1px solid var(--line);${ok?'':'opacity:.45'}"><div><b>${same ? '仅电气化改造' : '升级为 ' + cl.name}</b><br><span class="dim">${ok ? q.months+' 个月' : '需政策：'+G.policyById[cl.unlock].title}</span></div>
+            <div class="row"><span class="num">${ok ? fmtY(q.cost) : '—'}</span><button class="btn sm" data-act="upgrade" data-tr="${mine.id}" data-c="${cl.id}" ${(!ok || (same && mine.elec)) ? 'disabled' : ''}>改造</button></div></div>`; }).join('') + `</div>`;
+      }
+    }
+    // 自有线路清单
+    const own = S.tracks.filter(t => t.owner==='P');
+    html += `<h3>自有线路资产（${own.length} 段）</h3>`;
+    if (!own.length) html += `<div class="dim">暂无</div>`;
+    else html += `<table class="t"><tr><th>区段</th><th class="r">里程</th><th class="r">速度</th><th class="r">月过轨列数</th><th>状态</th></tr>
+      ${own.map(t => { const e = E[t.e]; return `<tr style="cursor:pointer" data-act="selEdge" data-e="${e.i}"><td>${C[e.a].name}—${C[e.b].name}</td><td class="num r">${e.dist}</td><td class="num r">${t.v}${t.elec?'⚡':''}</td><td class="num r">${t.usage ? t.usage.toFixed(0) : '—'}</td><td>${t.status==='build' ? `<span class="tag">在建 ${Math.max(0,Math.ceil((t.done-S.day)/30))}月</span>` : t.upg ? '<span class="tag blue">改造中</span>' : '<span class="tag green">运营</span>'}</td></tr>`; }).join('')}</table>`;
+    return html;
+  }
+
+  // —— 线路 ——
+  function odTable(r){
+    const PI = G.pairInfo; const set = new Set(r.stops); const rows = [];
+    Object.values(PI).forEach(x => { if (x.ci === undefined || !set.has(x.ci) || !set.has(x.cj)) return; rows.push(x); });
+    const pax = rows.filter(x => x.use === 'pax').sort((a,b) => b.served - a.served).slice(0, 10);
+    const fr = rows.filter(x => x.use === 'freight').sort((a,b) => b.served - a.served).slice(0, 8);
+    const tr = x => `<tr><td>${C[x.ci].name}—${C[x.cj].name}</td>${x.use==='freight' ? `<td><span class="tag" style="color:${CARGO[x.g].color};border-color:${CARGO[x.g].color}">${CARGO[x.g].name}</span></td>` : ''}<td class="num r">${(x.D/1e4).toFixed(1)}</td><td class="num r">${(x.share*100).toFixed(0)}%</td><td class="num r">${(x.served/1e4).toFixed(1)}</td></tr>`;
+    return `<div class="card" style="margin-top:6px">
+      ${pax.length ? `<b>客流（万人次/月）</b><table class="t"><tr><th>起讫</th><th class="r">总需求</th><th class="r">可争取</th><th class="r">本公司承运</th></tr>${pax.map(tr).join('')}</table>` : ''}
+      ${fr.length ? `<b style="display:block;margin-top:8px">货流（万吨/月）</b><table class="t"><tr><th>起讫</th><th>货种</th><th class="r">总需求</th><th class="r">可争取</th><th class="r">本公司承运</th></tr>${fr.map(tr).join('')}</table>` : ''}
+      ${!pax.length && !fr.length ? '<div class="dim">列车运行后显示。</div>' : ''}
+      <div class="dim" style="font-size:11px;margin-top:4px">「可争取」是相对国铁的竞争份额：你的列车比国铁越快，份额越高。货运只统计本线货车厢能装的货种。</div></div>`;
+  }
+  function pRoutes(){
+    const S = G.S; const y = G.ym(S.day).y;
+    let html = `<div class="row sb"><h2>运营线路</h2><button class="btn primary sm" data-act="newRoute">＋ 新建运营线路</button></div>`;
+    if (!S.routes.length) html += `<div class="hint">还没有运营线路。点击 <b>新建运营线路</b>，然后在地图上点击起点和终点（中途可再点几个城市），系统会沿已建轨道自动寻路。线路可以经过国铁、同业或自有轨道，系统会为每列车自动选择最优轨道（自有优先）。</div>`;
+    S.routes.forEach(r => {
+      const trains = S.trains.filter(t => t.route === r.id);
+      const run = trains.filter(t => t.status==='run' && G.econ[t.id] && G.econ[t.id].plan.ok);
+      let dist = 0; for (let k = 0; k < r.stops.length-1; k++) dist += G.edgeByPair[r.stops[k]+'-'+r.stops[k+1]].dist;
+      const lf = run.length ? run.reduce((a,t) => a + G.econ[t.id].lf, 0) / run.length : 0;
+      const monthly = run.reduce((a,t) => a + G.econ[t.id].monthly, 0);
+      // 区段产权（以首列车或通用内燃车估算）
+      const sample = run[0] || trains[0];
+      const plan = sample ? (G.econ[sample.id] && G.econ[sample.id].plan) : null;
+      html += `<div class="card" style="${ui.selRoute===r.id?'border-color:'+r.color:''}">
+        <div class="row sb"><div class="row"><span class="swatch" style="background:${r.color};width:14px;height:14px"></span><b style="font-size:14px">${esc(r.name)}</b>${G.isBranch(r) ? '<span class="tag" title="起讫有二三线城市或全程 200 km 以内：适合安排旧型车，旧车不打折、维修更省">支线</span>' : ''}</div>
+          <div class="row"><button class="btn sm" data-act="selRoute" data-id="${r.id}">${ui.selRoute===r.id?'取消高亮':'地图高亮'}</button>
+          <button class="btn sm danger" data-act="delRoute" data-id="${r.id}">${ui.confirm==='r'+r.id?'确认删除?':'删除'}</button></div></div>
+        <div class="stops" style="margin:8px 0">${(() => { const st = G.stopFlags(r); return r.stops.map((c,k) => { const town = C[c].tier > 1, lv = G.stationLv(c); const mid = k > 0 && k < r.stops.length-1;
+          const cls = st[k] ? 's' : 's pass'; const tip = !town ? '大城市车站' : lv < 1 ? '未开设车站，列车通过' : mid ? (st[k] ? '停靠（点击改为通过）' : '通过（点击改为停靠）') : '始发/终到站';
+          return (k?'<span class="arr">▶</span>':'') + `<span class="${cls}${town?' town':''}" title="${tip}" ${town && lv >= 1 && mid ? `data-act="skip" data-id="${r.id}" data-c="${c}" style="cursor:pointer"` : ''}>${C[c].name}</span>`; }).join(''); })()}</div>
+        <div class="dim" style="font-size:11px;margin:-4px 0 6px">方框为二三线城市：需先开设车站才能停靠；已开站的中途小站可点击切换「停靠 / 通过」。</div>
+        <div class="grid3">
+          <div class="stat"><label>全程</label><b>${dist}</b><small> km</small></div>
+          <div class="stat"><label>列车</label><b>${run.length}/${trains.length}</b></div>
+          <div class="stat"><label>平均载客/载重率</label><b>${pct(lf)}</b></div>
+          <div class="stat"><label>上月收入</label><b>${W(r.lastRev||0)}</b></div>
+          <div class="stat"><label>上月运行+过轨</label><b>${W(r.lastCost||0)}</b></div>
+          <div class="stat"><label>预计月净利</label><b class="${monthly>=0?'pos':'neg'}">${W(monthly)}</b></div>
+          ${(() => { const mg = run.length ? G.marginalOf(r.id) : null; if (!mg) return ''; return `<div class="stat" title="在这条线再加一列 ${G.trainById[mg.model].name}（同编组）后，全公司预计月净利的变化。新车自身约 ${W(mg.own)}；区段拥堵时会挤占已有列车的班次。"><label>再加一列的边际月利润</label><b class="${mg.gain>=0?'pos':'neg'}">${W(mg.gain)}</b></div>`; })()}
+          ${routeQual(r)}
+        </div>
+        ${svcRow(r)}
+        <div class="row" style="margin-top:8px"><button class="btn sm" data-act="od" data-id="${r.id}">${ui.odRoute===r.id?'收起起讫客货流表':'起讫客货流表'}</button></div>
+        ${ui.odRoute===r.id ? odTable(r) : ''}
+        ${plan && plan.ok ? `<h3>区段明细（${G.trainById[sample.model].name}）</h3><table class="t"><tr><th>区段</th><th>使用轨道</th><th class="r">限速</th><th class="r">能力利用</th><th class="r">单程过轨费</th></tr>
+          ${plan.legs.map(l => `<tr><td>${C[l.from].name}—${C[l.to].name}</td><td><span class="swatch" style="background:${ownerColor(l.owner)}"></span>${ownerName(l.owner)}</td><td class="num r">${Math.round(l.v)}</td><td class="num r">${utilTag(l.tr)}</td><td class="num r">${l.fee ? W(l.fee) : '<span class="pos">免</span>'}</td></tr>`).join('')}
+          </table><div class="muted" style="margin-top:6px">${plan.delay > 0.05 ? `<span class="neg">拥堵晚点 +${plan.delay.toFixed(1)} 小时</span> · ` : ''}单程 ${plan.oneWay.toFixed(1)} 小时 · 旅速 ${plan.vavg.toFixed(0)} km/h · 每月 ${plan.trips.toFixed(1)} 个单程</div>` : (sample ? `<div class="hint" style="margin-top:8px">⚠ ${esc(G.econ[sample.id].plan.why)}</div>` : '')}
+        <div class="row" style="margin-top:10px"><span class="muted">轨道选择</span><select data-act="routePref" data-id="${r.id}"><option value="fast" ${r.pref==='fast'?'selected':''}>自有优先 · 速度优先</option><option value="cheap" ${r.pref==='cheap'?'selected':''}>自有优先 · 费用优先</option></select>
+          <button class="btn sm" style="margin-left:auto" data-act="buyFor" data-id="${r.id}">为此线路购车 →</button></div>
+      </div>`;
+    });
+    return html;
+  }
+
+  // 资金按钮：现金不足时提示差额，额度够则一键借款开工
+  function fundBtn(cost, attrs, label, cls, style, quiet){
+    const S = G.S; const short = cost - S.cash; if (short <= 0) return `<button class="${cls}" style="${style}" ${attrs}>${label}</button>`;
+    const room = G.creditLimit() - S.debt; const need = Math.ceil(short / 1e5) * 1e5;
+    if (room >= need) return `${quiet ? '' : `<div class="hint" style="margin-top:10px">现金还差 <b>${fmtY(short)}</b>。可以向银行借款补足后开工（剩余贷款额度 ${fmtY(room)}）。</div>`}<button class="${cls}" style="${style}" ${attrs} data-loan="${need}">借款 ${W(need)} 并${label.replace(/^开工建设/, '开工')}</button>`;
+    return `${quiet ? '' : `<div class="hint" style="margin-top:10px"><span class="neg">资金不足：</span>还差 <b>${fmtY(short)}</b>，贷款额度只剩 ${fmtY(Math.max(0, room))}。可以先修一条更短的区段、等运营攒钱，或发行债券、上市融资（「财务」页）。</div>`}<button class="${cls}" style="${style}" disabled>${label}</button>${quiet ? '<div class="dim" style="font-size:11px;margin-top:2px;text-align:center">整段投资超出现金与贷款额度</div>' : ''}`;
+  }
+  function utilTag(trId){ const u = G.trackUtil[trId]; if (!u) return '—'; const c = u.u > 1 ? 'neg' : u.u > 0.72 ? 'gold' : 'dim'; return `<span class="${c}" title="本公司 ${u.own.toFixed(1)} 列/日 + 其他 ${u.bg.toFixed(1)} 列/日 / 能力 ${u.cap} 列/日">${pct(u.u)}</span>`; }
+  function satTag(v){ const c = v >= 70 ? 'pos' : v >= 45 ? '' : 'neg'; return `<b class="${c}">${Math.round(v)}</b>`; }
+  function routeQual(r){ const st = G.routeStats(r); if (!st) return '';
+    return `<div class="stat"><label>正点率</label><b class="${st.punct >= 0.9 ? 'pos' : st.punct >= 0.75 ? '' : 'neg'}">${pct(st.punct)}</b></div>
+      <div class="stat"><label>旅客/货主满意度</label>${satTag(r.sat === undefined ? 60 : r.sat)}<small> / 100</small></div>
+      <div class="stat"><label>最忙区段利用率</label><b class="${st.uMax > 1 ? 'neg' : st.uMax > 0.72 ? 'gold' : ''}">${pct(st.uMax)}</b></div>`; }
+  function gradeRow(r){ const S = G.S, gd = G.gradeOf(r), D = G.GRADES[gd];
+    const ts = S.trains.filter(t => t.route === r.id && G.trainById[t.model].use === 'pax');
+    const warn = [];
+    if (gd === 'night') { const sf = ts.length ? ts.reduce((a, t) => a + G.sleeperFrac(t), 0) / ts.length : 0; const p = ts.map(t => G.econ[t.id] && G.econ[t.id].plan).find(p => p && p.ok);
+      if (ts.length && sf < 0.6) warn.push(`卧铺车只占 ${Math.round(sf*100)}%，编组里多挂硬卧、软卧才能拿到全部卧铺票价和客源加成`);
+      if (p && p.oneWay < 6) warn.push(`全程只要 ${p.oneWay.toFixed(1)} 小时，太短：卧铺加成按各站对乘车时长计，6 小时以下递减，4 小时以下没有`);
+      if (p && p.oneWay > 18) warn.push(`全程 ${p.oneWay.toFixed(0)} 小时，超过一夜：乘车超过 16 小时的站对卧铺加成递减`);
+      if (ts.some(t => G.isUnit(G.trainById[t.model]) && !G.trainById[t.model].sleeper)) warn.push('动车组没有卧铺，不适合开行夜车'); }
+    if (gd === 'direct' && r.stops.length > 2) warn.push('中途各站一律通过，只服务起讫两站之间的客流');
+    return `<div class="row" style="margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap"><span class="muted">列车等级</span>${Object.entries(G.GRADES).map(([k, x]) => `<button class="btn sm ${gd===k?'primary':''}" data-act="grade" data-id="${r.id}" data-v="${k}" title="${x.desc}">${x.name}</button>`).join('')}</div>
+      <div class="dim" style="font-size:11px;margin-top:3px">${D.desc}</div>${warn.map(w => `<div class="neg" style="font-size:11px">· ${w}</div>`).join('')}`; }
+  function svcRow(r){ const st = G.routeStats(r); if (st && !st.pax) return ''; const lv = r.svc === undefined ? 1 : r.svc;
+    return gradeRow(r) + `<div class="row" style="margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap"><span class="muted">服务等级</span>${G.SVC.map((x,i) => `<button class="btn sm ${lv===i?'primary':''}" data-act="svc" data-id="${r.id}" data-v="${i}" title="${x.desc}；票价 ×${x.fare}，运行成本 ×${x.cost}">${x.name}</button>`).join('')}<span class="dim" style="font-size:11px">${G.SVC[lv].desc}</span></div>
+      <label class="row" style="margin-top:6px;font-size:12px;gap:6px"><input type="checkbox" data-act="slow" data-id="${r.id}" ${r.slow?'checked':''}> 公益慢车：全部已开站的小站停车，票价 65 折，领取地方补贴</label>`; }
+
+  // —— 车队 ——
+  // —— 机务段 ——
+  function depotBox(c){ const S = G.S, d = G.depotsOf().find(x => x.ci === c.i), L = G.DEPOT_LV;
+    if (d) { const nx = d.lv < 2 && !d.pend ? G.depotQuote(c.i, 2) : null;
+      return `<div class="card" style="margin-top:8px;padding:8px 10px"><div class="row sb"><b>⚙ ${d.pend ? L[d.pend.lv].name + '（施工中，' + Math.max(0, Math.ceil((d.pend.done - S.day)/30)) + ' 个月）' : L[d.lv].name}</b>${d.lv ? `<span class="dim">检修 ${d.used||0}/${L[d.lv].cap} 列</span>` : ''}</div>
+        ${nx ? `<div class="row sb" style="margin-top:6px;font-size:12px"><span class="dim">扩建为机务段：半径 ${L[2].radius} km，容量 ${L[2].cap} 列</span><button class="btn sm" data-act="depot" data-c="${c.i}" data-v="2">扩建 ${W(nx.cost)}</button></div>` : ''}</div>`; }
+    const q = G.depotQuote(c.i, 1);
+    return `<div class="row sb" style="margin-top:6px;font-size:12px"><span class="dim">在此建机务折返段：半径 ${L[1].radius} km 内的本公司列车就近检修</span><button class="btn sm" data-act="depot" data-c="${c.i}" data-v="1">建机务段 ${W(q.cost)}</button></div>`; }
+  function depotHTML(){ const S = G.S, L = G.DEPOT_LV, D = G.depotsOf(), y = G.ym(S.day).y;
+    const cov = S.trains.filter(t => G.depotCover[t.id]).length;
+    let h = `<h3>机务段</h3><div class="hint">自建机务段后，半径范围内线路上的本公司列车就近检修：可用率更高、老车衰减减半、日常维修费 −20%、大修停运从 30 天缩短到 18 天。每座机务段有检修容量，超出容量的列车不享受加成。</div>`;
+    if (D.length) h += `<table class="t"><tr><th>所在城市</th><th>等级</th><th class="r">检修列车</th><th class="r">月维护费</th><th></th></tr>${D.map(d => { const lv = d.lv || (d.pend && d.pend.lv);
+      return `<tr><td><b>${C[d.ci].name}</b></td><td>${d.pend ? `<span class="tag">施工中 ${Math.max(0, Math.ceil((d.pend.done - S.day)/30))}月</span>` : L[d.lv].name}</td><td class="num r ${d.lv && d.used > L[d.lv].cap ? 'neg' : ''}">${d.lv ? `${d.used||0} / ${L[d.lv].cap}` : '—'}</td><td class="num r">${d.lv ? W(L[d.lv].upkeep * 1e4 * G.cpi(y)) : '—'}</td>
+        <td class="r">${d.lv === 1 && !d.pend ? `<button class="btn sm" data-act="depot" data-c="${d.ci}" data-v="2">扩建</button>` : ''}</td></tr>`; }).join('')}</table>
+      <div class="dim" style="font-size:12px;margin:4px 0">本公司 ${S.trains.length} 列车中，${cov} 列由自有机务段检修。</div>`;
+    const cand = G.depotCandidates();
+    if (cand.length) h += `<div style="font-size:12px;margin:8px 0 4px"><b>推荐选址</b> <span class="dim">（按附近尚未覆盖的列车数）</span></div>${cand.slice(0, 3).map(x => { const q = G.depotQuote(x.ci, 1);
+      return `<div class="row sb" style="padding:5px 0;border-bottom:1px solid var(--line);font-size:12px"><span><b>${C[x.ci].name}</b> <span class="dim">可覆盖约 ${x.n} 列</span></span><button class="btn sm" data-act="depot" data-c="${x.ci}" data-v="1">建机务折返段 ${W(q.cost)}</button></div>`; }).join('')}`;
+    else if (!D.length) h += `<div class="dim">有了运营列车后，这里会推荐机务段选址。也可以在地图上点击大城市，在城市详情里直接修建。</div>`;
+    return h; }
+  function pFleet(){
+    const S = G.S; const y = G.ym(S.day).y;
+    const run = S.trains.filter(t => t.status==='run' && G.econ[t.id] && G.econ[t.id].plan && G.econ[t.id].plan.ok);
+    const lf = run.length ? run.reduce((a,t) => a + G.econ[t.id].lf, 0)/run.length : 0;
+    const mon = run.reduce((a,t) => a + G.econ[t.id].monthly, 0);
+    let html = `<h2>车队管理</h2>
+      <div class="grid3"><div class="stat"><label>列车总数</label><b>${S.trains.length}</b></div><div class="stat"><label>平均载客/载重率</label><b>${pct(lf)}</b></div><div class="stat"><label>预计月净利</label><b class="${mon>=0?'pos':'neg'}">${W(mon)}</b></div></div>`;
+    if (!S.trains.length) return html + `<div class="hint" style="margin-top:10px">车队为空。前往「购车」页采购第一列车。</div>` + depotHTML();
+    const ropts = sel => `<option value="">— 未分配 —</option>` + S.routes.map(r => `<option value="${r.id}" ${sel===r.id?'selected':''}>${G.isBranch(r) ? '［支线］' : ''}${esc(r.name)}</option>`).join('');
+    const old = S.trains.filter(t => ['ended','obsolete'].includes(G.eraOf(t))), oldMain = old.filter(t => t.route && !G.trainOnBranch(t));
+    if (old.length) html += `<div class="card" style="margin-top:10px;padding:8px 10px;font-size:12px"><b>车型换代</b>　车队里有 <b>${old.length}</b> 列车属于已停产或淘汰车型${oldMain.length ? `，其中 ${oldMain.length} 列仍跑干线：在干线上旧车票价打折、维修费更高` : ''}。<br><span class="dim">把旧车调到<b>支线</b>（起讫有二三线城市，或全程 200 km 以内）就没有票价折扣，维修费还能降 10%；也可以直接出售，或等同业来求购。</span></div>`;
+    const uo = (S.usedOffers || []).filter(o => S.trains.some(t => t.id === o.tid) && o.expire > S.day);
+    if (uo.length) html += `<h3>同业求购</h3>${uo.map(o => { const t = S.trains.find(x => x.id === o.tid), q = G.sellQuote(t), rv = (G.RIVALS||RIVALS).find(x => x.id === o.rid);
+      return `<div class="card" style="padding:8px 10px"><div class="row sb" style="flex-wrap:wrap;gap:6px"><span><b>${esc(rv ? rv.name : '同业')}</b> 求购 <b>${esc(t.name)}</b> <span class="dim">${G.trainById[t.model].name}</span></span><span class="num gold">${W(o.price)}</span></div>
+        <div class="row sb" style="margin-top:6px;font-size:12px;flex-wrap:wrap;gap:6px"><span class="dim">二手市场回收价 ${W(q)}，${o.price >= q ? '多卖 ' + W(o.price - q) : '少 ' + W(q - o.price)} · 还剩 ${Math.max(0, Math.ceil((o.expire - S.day)))} 天</span><span><button class="btn sm" data-act="declineUsed" data-id="${o.id}">婉拒</button> <button class="btn sm primary" data-act="acceptUsed" data-id="${o.id}">成交</button></span></div></div>`; }).join('')}`;
+    html += `<div class="flist">`;
+    S.trains.forEach(t => {
+      const m = G.trainById[t.model]; const e = G.econ[t.id] || { plan:{ ok:false, why:'计划未生成' }, lf:0, monthly:0 };
+      let st;
+      if (t.status === 'delivery') st = `<span class="tag blue">交付中 ${Math.max(0,Math.ceil(t.arrive - S.day))}天</span>`;
+      else if (t.status === 'overhaul') st = `<span class="tag blue">大修中 ${Math.max(0,Math.ceil(t.ovhDone - S.day))}天</span>`;
+      else if (t.status === 'repair') st = `<span class="tag red">故障临修 ${Math.max(0,Math.ceil(t.ovhDone - S.day))}天</span>`;
+      else if (!t.route) st = `<span class="tag">闲置</span>`;
+      else if (!e.plan.ok) st = `<span class="tag red">停运</span>`;
+      else st = `<span class="tag green">运营</span>`;
+      const running = t.status==='run' && e.plan.ok;
+      const money = running ? W(e.monthly) : W(-G.maintOf(t,y));
+      const canOvh = G.yrsSinceOvh(t) >= 2 && t.status !== 'delivery' && t.status !== 'overhaul';
+      html += `<div class="fcard">
+        <div class="fc-top"><span class="thumb">${art(t.model)}</span>
+          <div class="fc-name"><div class="row" style="gap:6px;flex-wrap:wrap"><b>${esc(t.name)}</b>${st}${eraTag(t)}</div><div class="dim fc-sub">${m.name}${/[（(]/.test(m.name) ? '' : ' · ' + useName[m.use]}</div></div>
+          <div class="fc-mon"><b class="num ${running ? (e.monthly>=0?'pos':'neg') : 'dim'}">${money}</b><small class="dim">${running ? '月净利' : '月维护'}</small></div></div>
+        <div class="fc-meta"><span class="dim">${consistText(t)}</span><span>${ageText(t)}</span></div>
+        ${t.route && e.plan && !e.plan.ok && !['delivery','overhaul','repair'].includes(t.status) ? `<div class="neg fc-why">⚠ ${esc(e.plan.why)}</div>`:''}
+        <div class="fc-act"><select data-act="assign" data-id="${t.id}">${ropts(t.route)}</select>
+          <div class="fc-lf" title="载客/载重率"><div class="bar ${m.use==='freight'?'g':''}"><i style="width:${Math.min(100,(e.lf||0)*100)}%"></i></div><span class="num dim">${pct(e.lf||0)}</span></div>
+          <div class="fc-btns">${G.isUnit(m)?'':`<button class="btn sm" data-act="consist" data-id="${t.id}">编组</button>`}${canOvh ? `<button class="btn sm" data-act="overhaul" data-id="${t.id}" title="费用 ${W(G.overhaulQuote(t))}元，停运 ${G.depotCover[t.id] ? 18 : 30} 天${G.depotCover[t.id] ? '（就近机务段）' : ''}">大修</button>` : ''}<button class="btn sm danger" data-act="sell" data-id="${t.id}" title="二手市场回收价 ${W(G.sellQuote(t))}元">${ui.confirm==='t'+t.id ? '确认 ' + W(G.sellQuote(t)) : '出售'}</button></div></div>
+      </div>`;
+    });
+    html += `</div><div class="hint" style="margin-top:10px">月净利已扣除运行成本、过轨费和车辆维护费。车辆距上次大修越久，可用率越低、故障越多；大修约花费购价的 15%，停运 30 天后焕然一新。出售时按残值回收：在产车型八折，已停产七折，淘汰车型只有五折。同业有时会出更高的价钱求购旧车。</div>`;
+    return html + depotHTML();
+  }
+
+  function eraTag(t){ const e = G.eraOf(t), br = t.route && G.trainOnBranch(t);
+    if (e === 'new') return '<span class="tag green">新型</span>';
+    if (e === 'ended') return `<span class="tag" title="${br ? '在支线上运营，不受影响' : '在干线上票价 −5%，维修费 +15%'}">已停产${br ? ' · 支线' : ''}</span>`;
+    if (e === 'obsolete') return `<span class="tag red" title="${br ? '在支线上运营，票价不打折，维修费 −10%' : '在干线上票价 −12%，维修费 +35%'}">淘汰车型${br ? ' · 支线' : ''}</span>`;
+    return ''; }
+  function ageText(t){ const S = G.S; const age = (S.day - t.bought) / 365, so = G.yrsSinceOvh(t), av = G.availOf(t);
+    return `<span style="font-size:11px" class="${av < 0.85 ? 'neg' : 'dim'}" title="车龄 ${age.toFixed(1)} 年，距上次大修 ${so.toFixed(1)} 年">${Math.floor(so)}年未修 · 可用 ${pct(av)}${G.depotCover[t.id] ? ' · 机务段检修' : ''}</span>`; }
+  // —— 管理：管理层、员工培训、科研 ——
+  function pMgmt(){
+    const S = G.S; const y = G.ym(S.day).y; const h = S.history[S.history.length-1] || {}; const rd = G.rdState();
+    const stars = n => '★'.repeat(n) + '<span class="dim">' + '☆'.repeat(3-n) + '</span>';
+    let html = `<h2>经营管理</h2><div class="grid3"><div class="stat"><label>上月人力费用</label><b>${W(h.staff||0)}</b></div><div class="stat"><label>上月研发投入</label><b>${W(h.rd||0)}</b></div><div class="stat"><label>培训等级</label><b>${G.TRAIN_LV[S.trainLv||0].name}</b></div></div>
+      <h3>管理层</h3><table class="t"><tr><th>职位</th><th>现任</th><th>效果</th><th></th></tr>${Object.entries(G.ROLES).map(([k,r]) => { const e = (S.execs||{})[k];
+        return `<tr><td><b>${r.name}</b></td><td>${e ? `${esc(e.name)} ${stars(e.lv)}<br><span class="dim" style="font-size:11px">${esc(e.bg)} · 年薪 ${W(G.execSalary(e.lv, y))}</span>` : '<span class="dim">空缺</span>'}</td><td style="font-size:12px">${e ? r.desc(e.lv) : '—'}</td><td>${e ? `<button class="btn sm danger" data-act="fire" data-v="${k}">解聘</button>` : ''}</td></tr>`; }).join('')}</table>
+      <h3>人才市场 <span class="dim" style="font-size:12px;font-weight:normal">每年 1 月更新</span></h3>${(S.cands||[]).map(c => `<div class="card"><div class="row sb"><span><b>${esc(c.name)}</b> ${stars(c.lv)} <span class="tag">${G.ROLES[c.role].name}</span></span><span class="dim">${c.age} 岁</span></div>
+        <div style="font-size:12px;margin:4px 0">${esc(c.bg)}。${G.ROLES[c.role].desc(c.lv)}</div><div class="row sb"><span class="dim" style="font-size:12px">年薪 ${W(G.execSalary(c.lv, y))} · 签约金 ${W(G.execSalary(c.lv, y)*0.5)}</span><button class="btn sm primary" data-act="hire" data-id="${c.id}">聘请</button></div></div>`).join('') || '<div class="dim">暂无候选人。</div>'}
+      <h3>员工培训</h3><div class="row" style="gap:6px;flex-wrap:wrap">${G.TRAIN_LV.map((t,i) => `<button class="btn sm ${(S.trainLv||0)===i?'primary':''}" data-act="trainLv" data-v="${i}">${t.name}${t.cost ? `（${t.cost} 万/列·月）` : ''}</button>`).join('')}</div>
+      <div class="dim" style="font-size:11px;margin-top:4px">每提高一级：正点率 +1 个百分点，运行成本 −3%，机车故障 −18%，行车事故 −20%。费用按列车数和物价计算。</div>
+      <h3>科研与国产化</h3><div class="row" style="gap:6px;flex-wrap:wrap;align-items:center"><span class="muted">研发投入</span>${['不投入','营收 1%','营收 2.5%','营收 5%'].map((n,i) => `<button class="btn sm ${rd.lv===i?'primary':''}" data-act="rdLv" data-v="${i}">${n}</button>`).join('')}</div>
+      <div class="dim" style="font-size:11px;margin:4px 0 8px">每投入 10 万元（1985 年价格）产生 1 个研发点，总工程师可以加快研发。</div>`;
+    const ps = G.rdProjects(); const cur = ps.find(p => p.key === rd.cur);
+    if (cur) html += `<div class="card"><div class="row sb"><b>进行中：${esc(cur.name)}</b><span class="num">${Math.floor(rd.pts)} / ${cur.pts}</span></div><div class="bar g" style="margin:6px 0"><i style="width:${Math.min(100, rd.pts/cur.pts*100)}%"></i></div><div class="dim" style="font-size:12px">${rd.lastGain ? `每月约 ${rd.lastGain.toFixed(1)} 点，预计 ${Math.ceil((cur.pts - rd.pts)/rd.lastGain)} 个月完成` : rd.lv ? '下月结算后显示进度' : '<span class="neg">研发投入为 0，项目停滞</span>'}</div></div>`;
+    html += ps.filter(p => p.key !== rd.cur).map(p => `<div class="row sb" style="padding:6px 0;border-bottom:1px solid var(--line)"><div><b>${esc(p.name)}</b> <span class="dim">${p.pts} 点</span><br><span class="dim" style="font-size:12px">${p.desc}${p.m ? ' · ' + esc(p.m.name) : ''}</span>${p.locked ? `<br><span class="neg" style="font-size:12px">${p.locked}</span>` : ''}</div><button class="btn sm" data-act="rdStart" data-v="${p.key}" ${p.locked ? 'disabled' : ''}>${rd.cur ? '切换到此项目' : '立项'}</button></div>`).join('');
+    if (!ps.length) html += '<div class="dim">暂无可立项的项目。购买 2 台以上同型进口车后，可立项国产化。</div>';
+    const done = Object.keys(rd.done||{}); if (done.length) html += `<div style="font-size:12px;margin-top:8px">已完成：${done.map(k => k.startsWith('loc_') ? (G.trainById[k.slice(4)]||{}).name + ' 国产化' : (G.OWN_MODELS.find(o => o.id===k)||{}).name).join('、')}</div>`;
+    html += `<div class="dim" style="font-size:11px;margin-top:6px">切换项目时，已积累的点数会保留在原项目上。</div>`;
+    return html;
+  }
+
+  // —— 产业：车站商业与沿线地产 ——
+  function cityEstateBox(c, y){ const S = G.S; if (y < 1988) return ''; const L = (S.land||{})[c.i] || { n:0, cost:0 }; const p = G.landPrice(c.i);
+    return `<div class="row sb" style="margin-top:6px;font-size:12px"><span>站前地价 <b>${W(p)}</b>/块${L.n ? ` · 持有 ${L.n} 块` : ''}</span><span><button class="btn sm" data-act="land" data-c="${c.i}">买地</button>${L.n ? ` <button class="btn sm" data-act="sellLand" data-c="${c.i}">卖地</button>` : ''}</span></div>`; }
+  function pEstate(){
+    const S = G.S; const y = G.ym(S.day).y; const h = S.history[S.history.length-1] || {};
+    const lit = Object.keys(S.lit).map(Number).sort((a,b) => (G.cityPax[b]||0) - (G.cityPax[a]||0));
+    let html = `<h2>车站商业与沿线地产</h2>
+      <div class="grid3"><div class="stat"><label>上月商业收入</label><b class="pos">${W(h.biz||0)}</b></div><div class="stat"><label>上月地产租金</label><b class="pos">${W(h.rent||0)}</b></div><div class="stat"><label>土地市值</label><b class="gold">${W(G.landValue())}</b></div></div>
+      <h3>车站商业</h3><div class="hint" style="margin-bottom:8px">在本公司列车停靠的车站开设商铺、投放广告。收入取决于该站旅客量、城市人口和旅客满意度。</div>`;
+    if (!lit.length) html += `<div class="dim">还没有开通列车服务的车站。</div>`;
+    else html += `<table class="t"><tr><th>车站</th><th class="r">月旅客</th><th>现有商业</th><th class="r">月收入</th><th></th></tr>${lit.slice(0, 30).map(ci => { const lv = G.shopLv(ci); const nx = lv + 1 < G.SHOP_LV.length ? G.shopQuote(ci, lv + 1) : null;
+      return `<tr><td><b>${C[ci].name}</b></td><td class="num r">${((G.cityPax[ci]||0)/1e4).toFixed(1)} 万</td><td>${lv ? G.SHOP_LV[lv].name : '<span class="dim">—</span>'}</td><td class="num r">${lv ? W(G.shopIncome(ci, y)) : '—'}</td>
+        <td>${nx ? `<button class="btn sm" data-act="shop" data-c="${ci}" data-v="${lv+1}" ${nx.why ? 'disabled' : ''} title="${nx.why || G.SHOP_LV[lv+1].name}">${nx.why ? nx.why : (lv ? '升级' : '开设') + ' ' + W(nx.cost)}</button>` : ''}</td></tr>`; }).join('')}</table>`;
+    html += `<h3>沿线地产</h3><div class="hint" style="margin-bottom:8px">${y < 1988 ? '1988 年起土地使用权才可以有偿转让。' : '提前在规划线路的站前买地，通车后地价上涨 25%，之后每年再涨约 4%。2000 年后全国地价进入快速上涨期。持有期间可以收取租金。也可以在地图上点击城市直接买地。'}</div>`;
+    const own = Object.entries(S.land||{}).filter(([c,L]) => L.n);
+    if (own.length) html += `<table class="t"><tr><th>城市</th><th class="r">块数</th><th class="r mhide">成本</th><th class="r">市值</th><th class="r">浮盈</th><th></th></tr>${own.map(([c,L]) => { const v = L.n * G.landPrice(+c); return `<tr><td><b>${C[c].name}</b>${S.lit[c] ? ' <span class="tag green">通车</span>' : ''}</td><td class="num r">${L.n}</td><td class="num r mhide">${W(L.cost)}</td><td class="num r">${W(v)}</td><td class="num r ${v>=L.cost?'pos':'neg'}">${W(v - L.cost)}</td><td class="r"><div class="tbtns"><button class="btn sm" data-act="land" data-c="${c}">加购</button><button class="btn sm" data-act="sellLand" data-c="${c}">卖一块</button></div></td></tr>`; }).join('')}</table>`;
+    if (y >= 1988) { const cand = C.filter(c => !S.lit[c.i]).map(c => ({ c, p:G.landPrice(c.i), near: G.adj[c.i].some(e => S.tracks.some(t => t.e === e.i && t.owner === 'P')) || G.adj[c.i].some(e => G.adj[e.a === c.i ? e.b : e.a].length && S.lit[e.a === c.i ? e.b : e.a]) }))
+        .filter(x => x.near).sort((a,b) => G.popOf(b.c,y) - G.popOf(a.c,y)).slice(0, 12);
+      if (cand.length) html += `<h3>尚未通车的邻近城市（适合提前买地）</h3><table class="t">${cand.map(x => `<tr><td><b>${x.c.name}</b> <span class="dim">${Math.round(G.popOf(x.c,y))} 万人</span></td><td class="num r">${W(x.p)}/块</td><td><button class="btn sm" data-act="land" data-c="${x.c.i}">买地</button></td></tr>`).join('')}</table>`; }
+    return html;
+  }
+  // —— 地方政府提议（合同页） ——
+  function localHTML(){
+    const S = G.S; const L = (S.locals||[]).filter(o => o.expire > S.day);
+    let h = `<h3>地方政府合作</h3>`;
+    if (!L.length) h += `<div class="dim">暂无提议。地方政府每半年会提出合资建线、设站补贴或公益慢车补贴。</div>`;
+    h += L.map(o => { let t = '', d = '';
+      if (o.kind === 'jv'){ const g = G.groups[o.gi]; t = `${C[o.host].name}市 · 合资修建 ${C[g.a].name}—${C[g.b].name}`; d = `修建这条走廊时，地方政府出资 <b>${Math.round(o.sub*100)}%</b>。条件：通车后 12 个月内开行客车，否则退还出资并损失商誉。`; }
+      if (o.kind === 'station'){ t = `${C[o.ci].name}市 · 请求设站`; d = `在${C[o.ci].name}开设车站时，市政府承担 <b>50%</b> 建站费用，没有附加条件。`; }
+      if (o.kind === 'slow'){ t = `${C[o.ci].name}地区 · 公益慢车补贴`; d = `把一条途经${C[o.ci].name}的客运线路设为「公益慢车」（全部小站停车，票价打 65 折），地方按每列·公里 <b>${o.rate} 元</b> 给予补贴。`; }
+      return `<div class="card"><div class="row sb"><b>${t}</b><span class="dim">剩 ${Math.ceil(o.expire - S.day)} 天</span></div><div style="font-size:12px;margin:6px 0">${d}</div><div class="row" style="justify-content:flex-end;gap:6px"><button class="btn sm" data-act="declineL" data-id="${o.id}">婉拒</button><button class="btn sm primary" data-act="acceptL" data-id="${o.id}">同意</button></div></div>`; }).join('');
+    const jv = S.jv || []; if (jv.length) h += `<div style="font-size:12px;margin-top:6px">${jv.map(j => { const g = G.groups[j.gi]; return `· 合资协议：${C[g.a].name}—${C[g.b].name}，地方出资 ${Math.round(j.sub*100)}%${j.since !== null ? `，已通车，需在 ${Math.max(0, Math.ceil((j.since + 365 - S.day)/30))} 个月内开行客车` : '，等待你开工（${Math.max(0, Math.ceil(((j.until||0) - S.day)/30))} 个月内有效）'}`; }).join('<br>')}</div>`;
+    return h;
+  }
+
+  // —— 政府任务 ——
+  function nowMK(){ const t = G.ym(G.S.day); return t.y * 12 + t.m; }
+  function govWhere(g){ return g.k === 'relief' ? `进出 ${C[g.city].name} 的全部货运` : g.k === 'coal' ? `${C[g.ci].name}—${C[g.cj].name} 煤炭` : `${C[g.ci].name}—${C[g.cj].name} 旅客`; }
+  function govCard(g, inModal){
+    const S = G.S, D = G.GOV[g.k], unit = D.unit, f = v => (v/1e4).toFixed(1);
+    const head = `<div class="row sb"><b>${esc(g.title)}</b><span class="tag ${g.k==='relief'?'red':g.k==='coal'?'':'blue'}">${D.name}</span></div>`;
+    const kv = `<dl class="kv"><dt>考核口径</dt><dd>${govWhere(g)}</dd><dt>执行期</dt><dd>${G.mkStr(g.from)} – ${G.mkStr(g.to)}</dd><dt>累计目标</dt><dd class="num">${f(g.target)} ${unit}</dd><dt>完成奖励</dt><dd class="pos">${W(g.cash)}元 · 商誉 +${D.rep}</dd><dt>基本完成（≥85%）</dt><dd>奖励的 40%</dd><dt>未完成</dt><dd class="neg">商誉 −${D.fail}</dd></dl>`;
+    if (g.st === 'offer') return `<div class="card gov">${head}<div style="font-size:12px;margin:6px 0">${esc(g.text)}</div>${kv}
+      <div class="row sb" style="margin-top:6px"><span class="dim" style="font-size:12px">${g.k==='relief' ? '婉拒将损失商誉 1 点 · ' : ''}剩 ${Math.max(0, Math.ceil(g.expire - S.day))} 天答复</span>
+      <span class="row" style="gap:6px"><button class="btn sm" ${inModal?'data-m':'data-act'}="govDec" data-id="${g.id}">婉拒</button><button class="btn sm primary" ${inModal?'data-m':'data-act'}="govAcc" data-id="${g.id}">接受任务</button></span></div></div>`;
+    const cur = G.govProgressNow(g), r = Math.min(1, cur / g.target), mk = nowMK();
+    const left = g.to - mk + 1, started = mk >= g.from;
+    const need = started && left > 0 ? Math.max(0, g.target - g.prog) / left : 0, rate = G.govMetric(g, 'plan');   // 按运行计划预计的月运量；累计进度只算实际完成
+    const st = g.st === 'part' ? '<span class="tag green">基本完成</span>' : g.st === 'done' ? '<span class="tag green">已完成</span>' : g.st === 'fail' ? '<span class="tag red">未完成</span>' : started ? `<span class="tag">剩 ${left} 个月</span>` : `<span class="tag">${G.mkStr(g.from)} 开始</span>`;
+    return `<div class="card gov"><div class="row sb"><b>${esc(g.title)}</b>${st}</div>
+      <div style="font-size:12px;margin:4px 0">${govWhere(g)} · 目标 ${f(g.target)} ${unit} · 奖励 ${W(g.cash)}元</div>
+      <div class="region"><span>${g.st==='active'?'实际累计':'完成量'}</span><div class="bar ${r>=1?'g':''}"><i style="width:${r*100}%"></i></div><span class="num r ${r>=1?'pos':''}">${f(Math.min(cur, g.target*9.99))} / ${f(g.target)}</span></div>
+      ${g.st==='active' ? `<div style="font-size:12px" class="${!started || rate >= need ? 'dim' : 'neg'}">${started ? `按计划预计运量约 ${f(rate)} ${unit}/月（以实际完成量考核），按期完成需要每月 ${f(need)} ${unit}。${rate < need ? '运力不足：可加开列车、增加编组或提高服务频次。' : ''}` : `执行期尚未开始，当前运量约 ${f(rate)} ${unit}/月，按期完成需要平均每月 ${f(g.target/(g.to-g.from+1))} ${unit}。可以提前调配运力。`}</div>` : ''}</div>`;
+  }
+  function govHTML(){
+    const S = G.S; G.ensureT4();
+    const offers = S.gov.filter(g => g.st === 'offer'), act = S.gov.filter(g => g.st === 'active'), past = S.gov.filter(g => g.st === 'done' || g.st === 'fail' || g.st === 'part');
+    let h = `<h3>政府任务与特运</h3>`;
+    if (!offers.length && !act.length) h += `<div class="dim">暂无任务。每年 11 月下达次年春运加开，9 月下达冬季电煤保供；汛期和重大灾害时会下达抢险运输任务。任务只会派给已有相应运量的线路。</div>`;
+    h += offers.map(g => govCard(g)).join('') + act.map(g => govCard(g)).join('');
+    if (past.length) h += `<div style="font-size:12px;margin-top:6px">${past.slice(-4).reverse().map(g => `· ${esc(g.title)}：<span class="${g.st==='fail'?'neg':'pos'}">${g.st==='done' ? `完成，奖励 ${W(g.cash)}元` : g.st==='part' ? `基本完成（${Math.round(g.prog/g.target*100)}%），奖励 ${W(g.paid||0)}元` : `未完成（${Math.round(g.prog/g.target*100)}%）`}</span>`).join('<br>')}</div>`;
+    return h;
+  }
+
+  // —— 合同 ——
+  const CARS_FOR = {}; Object.entries(CAR_CARGO).forEach(([car, gs]) => gs.forEach(g => (CARS_FOR[g] = CARS_FOR[g] || []).push(car)));
+  function repTag(){ const r = G.S.rep ?? 50; const [n, c] = r >= 80 ? ['金字招牌','green'] : r >= 60 ? ['商誉良好','green'] : r >= 40 ? ['一般',''] : r >= 20 ? ['欠佳','red'] : ['声名狼藉','red']; return `<span class="tag ${c}">${n}</span>`; }
+  function cRoute(o){ const to = o.from === o.a ? o.b : o.a; return `${C[o.from].name} → ${C[to].name}`; }
+  function cService(o){
+    const pi = G.pairInfo[G.contractKey(o)];
+    if (pi && pi.svcap > 0) { const ok = pi.svcap >= o.tons * 0.8; return `<span class="${ok?'pos':'neg'}">现有运力 ${(pi.svcap/1e4).toFixed(1)} 万吨/月${ok ? '' : '，不足 80%'}</span>`; }
+    return `<span class="neg">尚无服务</span>。开行一条经停${C[o.a].name}与${C[o.b].name}的货运线路，并编挂${(CARS_FOR[o.g]||[]).map(id => (G.carById[id]||{name:id}).name).join('、')}即可承运`;
+  }
+  function pContracts(){
+    const S = G.S; G.ensureT2();
+    const offers = S.offers.filter(o => o.expire > S.day);
+    const cap = 4 + Math.floor(S.rep / 25);
+    let html = `<h2>运输合同</h2>
+      <div class="grid3">
+        <div class="stat"><label>商誉</label><b class="gold">${Math.round(S.rep)}</b><small> / 100</small> ${repTag()}</div>
+        <div class="stat"><label>履行中 / 上限</label><b>${S.contracts.length} / ${cap}</b></div>
+        <div class="stat"><label>近 12 月合同奖罚</label><b class="${S.history.slice(-12).reduce((a,h)=>a+(h.contract||0),0)>=0?'pos':'neg'}">${W(S.history.slice(-12).reduce((a,h)=>a+(h.contract||0),0))}</b></div>
+      </div>
+      <div class="hint" style="margin-top:8px">货主每季度发来合同邀约，90 天内有效。签约后，合同货量会加进该站对的货源；每月运量达到目标的 80% 即可拿到月度奖金，否则支付违约金（前 2 个月为筹备期，不罚款）。违约 3 次合同解除；履约率达到 75% 的合同到期另有结算奖励。商誉影响贷款额度、债券利率、合同规模和上市估值。</div>
+`;
+    html += govHTML() + `<h3>合同邀约</h3>`;
+    html += offers.length ? offers.map(o => `<div class="card">
+        <div class="row sb"><b>${esc(o.shipper)}</b><span class="tag" style="background:${CARGO[o.g].color};color:#fff">${CARGO[o.g].name}</span></div>
+        <div style="margin:4px 0">${cRoute(o)} · 约 ${o.d} km · 每月 <b>${(o.tons/1e4).toFixed(1)} 万吨</b> · ${o.months} 个月</div>
+        <dl class="kv"><dt>月度奖金</dt><dd class="pos">${W(o.mBonus)}</dd><dt>到期奖励</dt><dd class="pos">${W(o.fBonus)}</dd><dt>违约金/次</dt><dd class="neg">${W(o.penalty)}</dd><dt>邀约剩余</dt><dd>${Math.ceil(o.expire - S.day)} 天</dd></dl>
+        <div style="font-size:12px;margin:4px 0">${cService(o)}</div>
+        <div class="row" style="justify-content:flex-end;gap:6px"><button class="btn sm" data-act="declineC" data-id="${o.id}">婉拒</button><button class="btn sm primary" data-act="acceptC" data-id="${o.id}">签约</button></div></div>`).join('')
+      : `<div class="dim">暂无邀约。货主每季度末发来新的邀约。</div>`;
+    html += `<h3>履行中的合同</h3>`;
+    html += S.contracts.length ? S.contracts.map(o => { const pi = G.pairInfo[G.contractKey(o)]; const cur = pi ? Math.min(1, pi.served / o.tons) : 0;
+      return `<div class="card">
+        <div class="row sb"><b>${esc(o.shipper)}</b><span class="dim">剩 ${o.left} 个月 · 违约 ${o.strikes}/3</span></div>
+        <div style="margin:4px 0">${cRoute(o)} · ${CARGO[o.g].name} 每月 ${(o.tons/1e4).toFixed(1)} 万吨</div>
+        <div class="region"><span>本月预计</span><div class="bar ${cur>=0.8?'g':''}"><i style="width:${cur*100}%"></i></div><span class="num r ${cur>=0.8?'pos':'neg'}">${pct(cur)}</span></div>
+        <div class="cbars">${o.hist.slice(-24).map(h => `<i title="${h}%" style="height:${Math.max(6, Math.min(100,h))}%;background:${h>=80?'#3f8a55':'#c0392b'}"></i>`).join('')}</div>
+        <div style="font-size:12px">${cService(o)}</div></div>`; }).join('')
+      : `<div class="dim">还没有签约的合同。</div>`;
+    return html + localHTML();
+  }
+  // —— 资本运作 ——
+  function capitalHTML(){
+    const S = G.S; const y = G.ym(S.day).y; G.ensureT2();
+    const bsum = S.bonds.reduce((a,b) => a + b.amt, 0);
+    let h = `<h3>企业债券</h3><div class="card">`;
+    if (y < 1993) h += `<div class="dim">1993 年起允许企业发行债券。</div>`;
+    else h += `<dl class="kv"><dt>当前票面利率</dt><dd>${(G.bondRate()*100).toFixed(2)}%（银行 ${(G.rate(y)*100).toFixed(2)}%）</dd><dt>未到期债券</dt><dd>${fmtY(bsum)}</dd><dt>可发行额度</dt><dd>${fmtY(G.bondRoom())}</dd></dl>
+      ${S.bonds.length ? `<table class="t" style="margin-top:6px"><tr><th>发行</th><th class="r">金额</th><th class="r">利率</th><th class="r">到期</th></tr>${S.bonds.map(b => `<tr><td>${b.y}</td><td class="num r">${W(b.amt)}</td><td class="num r">${(b.rate*100).toFixed(2)}%</td><td class="num r">${G.ym(b.due).y}.${G.ym(b.due).m}</td></tr>`).join('')}</table>` : ''}
+      <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap"><button class="btn sm" data-act="bond" data-v="5e7">发债 5000万</button><button class="btn sm" data-act="bond" data-v="2e8">发债 2亿</button><button class="btn sm" data-act="bond" data-v="1e9">发债 10亿</button></div>
+      <div class="dim" style="font-size:11px;margin-top:4px">5 年期，按月付息，到期一次还本。额度为净资产的 30%，商誉越高利率越低。</div>`;
+    h += `</div><h3>资本市场</h3><div class="card">`;
+    if (!S.ipo) { const c = G.ipoCheck();
+      h += `<div>公司尚未上市。上市可一次募集大笔资金，之后可增发、分红和回购。</div>
+        <div style="font-size:12px;margin:6px 0">${c.ok ? `<span class="pos">已满足上市条件</span>，按当前估值发行 25% 股份，预计募集约 ${fmtY(G.valuation()*0.25*0.88*0.97)}。` : '上市条件：' + c.why.map(x => `<span class="neg">${x}</span>`).join('；')}</div>
+        <button class="btn sm ${c.ok?'primary':''}" data-act="ipo" ${c.ok?'':'disabled'}>申请上市</button>`; }
+    else { const I = S.ipo; const q = G.secondaryQuote(); const chg = I.hist.length > 13 ? I.price / I.hist[I.hist.length-13].p - 1 : 0;
+      h += `<div class="grid3"><div class="stat"><label>股价</label><b class="gold">${I.price.toFixed(2)}</b><small> 元 <span class="${chg>=0?'pos':'neg'}">${chg>=0?'+':''}${(chg*100).toFixed(0)}%/年</span></small></div>
+        <div class="stat"><label>总市值</label><b>${W(G.marketCap())}</b></div><div class="stat"><label>市盈率</label><b>${G.ttmProfit() > 0 ? (G.marketCap()/G.ttmProfit()).toFixed(1) : '—'}</b></div></div>
+        <canvas class="chart" id="stockChart" style="height:120px"></canvas>
+        <dl class="kv"><dt>总股本</dt><dd>${(I.shares/1e4).toFixed(0)} 万股</dd><dt>公众持股</dt><dd>${pct(I.pub/I.shares)}</dd><dt>发行价</dt><dd>${I.ipoPrice.toFixed(2)} 元</dd><dt>市场情绪</dt><dd>${(MARKET_SENT[y]||1) >= 1.2 ? '火热' : (MARKET_SENT[y]||1) <= 0.85 ? '低迷' : '平稳'}</dd></dl>
+        <div class="row" style="margin:8px 0;gap:6px;align-items:center"><span>分红率</span>${['不分红','20%','40%'].map((n,i) => `<button class="btn sm ${I.payoutLv===i?'primary':''}" data-act="payout" data-v="${i}">${n}</button>`).join('')}</div>
+        <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm" data-act="secondary" ${q.wait>0?'disabled':''}>增发 10%（约 ${W(q.raise)}）${q.wait>0?` · ${Math.ceil(q.wait/30)} 个月后`:''}</button><button class="btn sm" data-act="buyback">回购 2%</button></div>
+        <div class="dim" style="font-size:11px;margin-top:4px">股价随净资产、近 12 个月利润、商誉和大盘情绪变动。不分红会被市场打折，高分红提升估值和商誉。</div>`; }
+    return h + `</div>`;
+  }
+  function drawStockChart(){ const c = $('#stockChart'); if (!c || !G.S.ipo) return; const H = G.S.ipo.hist.slice(-120);
+    chart(c, H.map(h => { const t = G.ym(h.d); return `${t.y}.${t.m}`; }), [{ name:'股价', color:'#b3261e', data:H.map(h => h.p), fill:true }], v => v.toFixed(1)); }
+
+  // —— 购车 ——
+  function pMarket(){
+    const S = G.S; const y = G.ym(S.day).y; const f = ui.mf;
+    const chip = (k, v, n) => `<button class="chip ${f[k]===v?'on':''}" data-act="mf" data-k="${k}" data-v="${v}">${n}</button>`;
+    const catBar = `<div class="filters" style="margin-bottom:12px">${chip('cat','loco','机车 / 动车组')}${chip('cat','car','客车厢 / 货车厢')}</div>`;
+    if (f.cat === 'car') return pCars(chip, catBar);
+    let list = TRAINS.filter(m => (f.use==='all'||m.use===f.use) && (f.type==='all'|| (f.type==='emu' ? (m.type==='emu'||m.type==='dmu') : m.type===f.type)) && (f.origin==='all' || (f.origin==='cn' ? !m.imported : !!m.imported)));
+    list = list.filter(m => !m.research || (S.rd && S.rd.done[m.research]));
+    if (f.show === 'sale') list = list.filter(m => G.available(m));
+    else if (f.show === 'soon') list = list.filter(m => m.year > y).sort((a,b) => a.year-b.year);
+    list.sort((a,b) => (G.available(b)-G.available(a)) || (f.show === 'sale' ? b.year - a.year : a.year - b.year));
+    const quota = S.mods.importQuota >= 99 ? '不限' : `${S.imports.n}/${S.mods.importQuota}`;
+    let html = catBar + `<h2>车辆市场 <span class="tag">${y}年</span><span class="tag ${S.mods.tariff>0.3?'red':'green'}">进口关税 ${pct(S.mods.tariff)}</span><span class="tag">进口额度 ${quota}</span></h2>
+      <div class="filters">${chip('show','sale','在售')}${chip('show','soon','即将上市')}${chip('show','all','全部图鉴')}</div>
+      <div class="filters">${chip('use','all','全部用途')}${chip('use','pax','客运')}${chip('use','freight','货运')}</div>
+      <div class="filters">${chip('type','all','全部动力')}${chip('type','steam','蒸汽')}${chip('type','diesel','内燃')}${chip('type','electric','电力')}${chip('type','emu','动车组')}<span style="width:10px"></span>${chip('origin','all','全球')}${chip('origin','cn','国产')}${chip('origin','im','进口')}</div>`;
+    if (!list.length) html += `<div class="dim">没有符合条件的车型。</div>`;
+    const ropts = `<option value="">暂不分配</option>` + S.routes.map(r => `<option value="${r.id}" ${ui.buyRoute===r.id?'selected':''}>${esc(r.name)}</option>`).join('');
+    list.forEach(m => {
+      const av = G.available(m); const p = G.trainPrice(m);
+      const capTxt = m.use==='pax' ? `${m.cap} 人` : `${m.cap.toLocaleString()} t`;
+      const needElec = m.type==='electric' || m.type==='emu';
+      html += `<div class="tcard ${av?'':'na'}">
+        <div class="art">${art(m.id)}<span class="flag">${m.country}</span><span class="yr">${m.year}–${m.end>=2030?'':m.end}</span></div>
+        <div class="body">
+          <div class="row sb"><div><span class="name">${m.name}</span>${av && y - m.year <= 1 ? ' <span class="tag green">新车</span>' : ''}${av && m.end === y ? ' <span class="tag red">今年停产</span>' : ''}<span class="en">${m.en}</span></div><span class="tag ${m.use==='pax'?'blue':'green'}">${useName[m.use]} · ${typeName[m.type]}</span></div>
+          <div class="specs">
+            <div><label>最高速度</label><b>${m.vmax} km/h</b></div>
+            <div><label>功率</label><b>${m.power.toLocaleString()} kW</b></div>
+            <div><label>${m.use==='pax'?'定员':'牵引定数'}</label><b>${capTxt}</b></div>
+            <div><label>轴式</label><b style="font-size:11px">${m.axle}</b></div>
+          </div>
+          <div class="note">${m.note}<br><span class="dim">制造：${m.maker}${needElec?' · 需电气化线路':''}${m.tilt?' · 摆式车体：普速/快速线上可提速20%':''}${m.plateau?' · 高原适应型':''}</span></div>
+          <div class="buyrow">
+            <div class="price"><span class="num gold" style="font-size:15px">${fmtY(p.total)}</span><div class="dim pbrk">${p.consist ? `<span>机车 ${W(p.loco)}</span><span>默认编组 ${p.dc.map(x => G.carById[x.id].name + '×' + x.n).join('、')} ${W(p.consist)}</span>` : '<span>固定编组</span>'}<span>${p.tariff ? '含关税 ' + pct(p.tariff) + ' · ' : ''}运行成本 ${(m.run*1.3*G.cpi(y)).toFixed(0)} 元/列km</span></div></div>
+            ${av ? `<div class="buyact"><select id="br_${m.id}">${ropts}</select><button class="btn primary sm" data-act="buy" data-m="${m.id}">购买</button></div>` : `<span class="tag">${m.year > y ? m.year + ' 年上市' : '已停产（' + m.end + '）'}</span>`}
+          </div>
+        </div></div>`;
+    });
+    return html;
+  }
+
+  function pCars(chip, catBar){
+    const S = G.S; const y = G.ym(S.day).y; const f = ui.mf;
+    let list = CARS.filter(c => (f.ck==='all'||!f.ck||c.kind===f.ck) && (f.show==='all' || (f.show==='soon' ? c.year > y : G.carAvailable(c))));
+    list.sort((a,b) => (G.carAvailable(b)-G.carAvailable(a)) || a.year-b.year);
+    let html = catBar + `<h2>车厢图鉴 <span class="tag">${y}年</span></h2>
+      <div class="hint" style="margin-bottom:10px">车厢在 <b>「车队」→ 编组</b> 中按需购买并挂到机车后面。客车的 <b>舒适度</b> 影响票价：长途旅客更愿意为卧铺和空调车付钱，1996 年后无空调车厢吸引力下降。编组总重不能超过机车牵引能力。</div>
+      <div class="filters">${chip('show','sale','在售')}${chip('show','soon','即将上市')}${chip('show','all','全部图鉴')}</div>
+      <div class="filters">${chip('ck','all','全部')}${chip('ck','pax','客车厢')}${chip('ck','freight','货车厢')}</div>`;
+    list.forEach(c => { const av = G.carAvailable(c);
+      html += `<div class="tcard ${av?'':'na'}"><div class="art">${carArt(c.id)}<span class="flag">${c.country}</span><span class="yr">${c.year}–${c.end>=2020?'':c.end}</span></div><div class="body">
+        <div class="row sb"><span class="name">${c.name}</span><span class="tag ${c.kind==='pax'?'blue':'green'}">${c.kind==='pax'?'客车':'货车 · '+c.cargo}</span></div>
+        <div class="specs">${c.kind==='pax' ? `<div><label>定员</label><b>${c.seats} 人</b></div><div><label>舒适度</label><b>${c.comfort.toFixed(1)}${c.ac?' ❄':''}</b></div>` : `<div><label>载重</label><b>${c.load} t</b></div><div><label>货类</label><b style="font-size:11px">${c.cargo}</b></div>`}
+          <div><label>自重</label><b>${c.tare} t</b></div><div><label>构造速度</label><b>${c.vmax} km/h</b></div></div>
+        <div class="note">${c.note}</div>
+        <div class="row sb"><span class="num gold">${fmtY(G.carPrice(c))} / 辆</span>${av ? '<span class="dim">在「车队」编组中购买</span>' : `<span class="tag">${c.year > y ? c.year + ' 年上市' : '已停产'}</span>`}</div></div></div>`; });
+    return html;
+  }
+  function consistModal(){
+    const S = G.S; const d = ui.cdraft; const t = S.trains.find(x => x.id === d.tid); if (!t){ closeModal(); return; }
+    const m = G.trainById[t.model]; const cars = Object.entries(d.n).map(([id,n]) => ({ id, n })).filter(x => x.n > 0);
+    const cs = G.consistStats(Object.assign({}, t, { cars })); const old = {}; (t.cars||[]).forEach(x => old[x.id] = x.n);
+    let cost = 0, refund = 0; Object.keys(Object.assign({}, old, d.n)).forEach(id => { const dd = (d.n[id]||0) - (old[id]||0); const pr = G.carPrice(G.carById[id]); if (dd > 0) cost += pr*dd; else refund += pr*(-dd)*0.6; });
+    const over = cs.weight > cs.limit, long = cs.n > G.maxCars(m);
+    const avail = CARS.filter(c => c.kind === m.use && (G.carAvailable(c) || old[c.id]));
+    const L = 600; const cmf = G.comfortMul(Object.assign({}, t, { cars }), L);
+    modal(`<h1>列车编组 · ${esc(t.name)}</h1><div class="muted">${m.name} · ${useName[m.use]} · 牵引能力 ${cs.limit.toLocaleString()} t · 最多 ${G.maxCars(m)} 辆</div>
+      <div class="grid3" style="margin:12px 0">
+        <div class="stat"><label>${m.use==='pax'?'总定员':'总载重'}</label><b>${cs.cap.toLocaleString()}</b><small>${m.use==='pax'?' 人':' t'}</small></div>
+        <div class="stat"><label>编组总重 / 牵引能力</label><b class="${over?'neg':''}">${Math.round(cs.weight).toLocaleString()}</b><small> / ${cs.limit.toLocaleString()} t</small><div class="bar" style="margin-top:4px"><i style="width:${Math.min(100,cs.weight/cs.limit*100)}%;${over?'background:var(--red)':''}"></i></div></div>
+        <div class="stat"><label>列车最高速度</label><b>${cs.vmax}</b><small> km/h</small>${m.use==='pax'?`<br><small>长途舒适加成 ×${cmf.toFixed(2)}</small>`:''}</div>
+      </div>
+      ${m.use==='freight' ? (() => { const cc = G.cargoCaps(Object.assign({}, t, { cars })).caps; const ks = Object.keys(cc); return `<div style="margin:-4px 0 10px;font-size:12px"><span class="dim">可装货种：</span>${ks.length ? ks.map(g => `<span class="tag" style="color:${CARGO[g].color};border-color:${CARGO[g].color}">${CARGO[g].name} ${cc[g].toLocaleString()} t</span>`).join(' ') : '<span class="neg">无</span>'} <span class="dim">· 敞车拉煤和矿石，棚车拉粮食和件杂货，罐车拉油，集装箱车拉集装箱；混编可兼顾多种货</span></div>`; })() : ''}
+      <div class="clist">${avail.map(c => `<div class="crow ${(d.n[c.id]||0) ? 'on' : ''}"><span class="thumb cthumb">${carArt(c.id)}</span>
+        <div class="cinfo"><b>${c.name}</b><div class="dim">${c.country}${c.ac?' · 空调':''} · ${c.kind==='pax' ? c.seats + ' 座' : c.load + ' t'} · ${c.vmax} km/h · <span class="num">${W(G.carPrice(c))}</span>/辆${!G.carAvailable(c)?' · <span class="neg">已停产，只能减少</span>':''}</div></div>
+        <div class="cstep"><button class="btn sm" data-cm="dec" data-id="${c.id}">−</button><b class="num">${d.n[c.id]||0}</b><button class="btn sm" data-cm="inc" data-id="${c.id}" ${!G.carAvailable(c)?'disabled':''}>＋</button><button class="btn sm" data-cm="inc5" data-id="${c.id}" ${!G.carAvailable(c)?'disabled':''}>+5</button></div></div>`).join('')}
+      </div>
+      <div class="row sb cfoot" style="margin-top:14px"><div class="muted">新购 ${W(cost)} · 回收 ${W(refund)}（按六折）· <b>净支出 ${W(cost-refund)}</b>${over?' · <span class="neg">超出牵引能力</span>':''}${long?' · <span class="neg">编组过长</span>':''}</div>
+        <div class="row"><button class="btn" data-m="close">取消</button><button class="btn primary" data-cm="ok" ${over||long?'disabled':''}>确认编组</button></div></div>`, true);
+  }
+
+  // —— 财务 ——
+  function monthBanner(){
+    const mf = G.MF || {}; const evs = mf.evs || []; const t = G.ym(G.S.day);
+    const tip = mf.pax > 1.1 ? (t.m <= 2 ? '春运' : t.m === 10 ? '国庆黄金周' : t.m === 5 ? '五一黄金周' : '暑运') : mf.pax < 0.95 ? '客运淡季' : '平稳';
+    return `<div class="card" style="margin:8px 0"><div class="row sb"><b>本月市场</b><span class="dim">${t.y}年${t.m}月</span></div>
+      <dl class="kv" style="margin-top:6px"><dt>客流系数</dt><dd>×${(mf.pax||1).toFixed(2)}（${tip}）</dd><dt>货运系数</dt><dd>×${(mf.fr||1).toFixed(2)}</dd></dl>
+      ${evs.map(ev => `<div style="margin-top:4px"><span class="tag ${ev.block?'red':'blue'}">${ev.title}</span> <span class="dim" style="font-size:12px">${ev.text}</span></div>`).join('')}</div>`;
+  }
+  function reportHTML(r){
+    const tot = Math.max(1, r.tons); const cg = CARGO_IDS.map(g => [g, (r.cargo||{})[g]||0]).filter(x => x[1] > 0).sort((a,b) => b[1]-a[1]);
+    return `<div class="stamp">${r.y} 年度报告</div><h1>${esc(G.S.company)} ${r.y} 年报</h1>
+      <div class="grid3">
+        <div class="stat"><label>全年营收</label><b>${W(r.rev)}</b></div><div class="stat"><label>净利润</label><b class="${r.net>=0?'pos':'neg'}">${W(r.net)}</b></div><div class="stat"><label>年末净资产</label><b class="gold">${W(r.worth)}</b></div>
+        <div class="stat"><label>旅客发送</label><b>${(r.paxN/1e4).toFixed(0)}</b><small> 万人次</small></div><div class="stat"><label>货物发送</label><b>${(r.tons/1e4).toFixed(0)}</b><small> 万吨</small></div><div class="stat"><label>点亮城市</label><b>${r.lit}</b></div>
+      </div>
+      <h3>市场份额（占全国铁路）</h3>
+      <dl class="kv"><dt>客运</dt><dd>${(r.paxShare*100).toFixed(2)}%</dd><dt>货运</dt><dd>${(r.tonShare*100).toFixed(2)}%</dd><dt>自有线路</dt><dd>${r.km.toLocaleString()} km</dd><dt>列车</dt><dd>${r.trains} 列</dd>${r.rep !== undefined ? `<dt>商誉</dt><dd>${Math.round(r.rep)}</dd>` : ''}${r.sat !== undefined ? `<dt>平均满意度</dt><dd>${Math.round(r.sat)}</dd>` : ''}${r.mcap ? `<dt>年末股价 / 市值</dt><dd>${r.price.toFixed(2)} 元 / ${W(r.mcap)}</dd><dt>派发红利</dt><dd>${W(r.div||0)}</dd>` : ''}</dl>
+      <h3>营收构成</h3>
+      <dl class="kv"><dt>客运</dt><dd>${W(r.pax)}</dd><dt>货运</dt><dd>${W(r.freight)}</dd><dt>过轨费收入</dt><dd>${W(r.feeIn)}</dd>${r.biz ? `<dt>车站商业</dt><dd>${W(r.biz)}</dd>` : ''}${r.overseas ? `<dt>海外项目</dt><dd>${W(r.overseas)}</dd>` : ''}${r.rent ? `<dt>地产租金</dt><dd>${W(r.rent)}</dd>` : ''}${r.subsidy ? `<dt>公益慢车补贴</dt><dd>${W(r.subsidy)}</dd>` : ''}${r.contract ? `<dt>合同奖罚</dt><dd class="${r.contract>=0?'pos':'neg'}">${W(r.contract)}</dd>` : ''}<dt>经营支出</dt><dd class="neg">${NW(r.opex)}</dd><dt>资本支出</dt><dd class="dim">${W(r.capex)}</dd></dl>
+      ${r.fin ? (() => { const F = r.fin, it = [['银行借款', F.loanIn, 1], ['归还贷款', F.loanOut, -1], ['发行债券', F.bondIn, 1], ['兑付债券', F.bondOut, -1], ['股权融资（上市/增发）', F.equityIn, 1], ['回购股份', F.buyback, -1], ['派发红利', F.div, -1]].filter(x => x[1]);
+        return `<h3>现金流桥接</h3><dl class="kv"><dt>经营净利</dt><dd class="${r.net>=0?'pos':'neg'}">${W(r.net)}</dd><dt>投资净支出（建设与购车）</dt><dd class="neg">${W(-r.capex)}</dd>${it.map(x => `<dt>${x[0]}</dt><dd class="${x[2]>0?'pos':'neg'}">${W(x[1] * x[2])}</dd>`).join('')}${r.cashPreDiv !== undefined ? `<dt>年末现金（派息前 / 派息及融资后）</dt><dd>${W(r.cashPreDiv)} / ${W(r.cash)}</dd>` : ''}${r.frFee ? `<dt>其中经营权年费</dt><dd class="neg">${W(-r.frFee)}</dd>` : ''}</dl>`; })() : ''}
+      ${cg.length ? `<h3>货物构成</h3>` + cg.map(([g,v]) => `<div class="region"><span>${CARGO[g].name}</span><div class="bar"><i style="width:${v/tot*100}%;background:${CARGO[g].color}"></i></div><span class="num r muted">${(v/1e4).toFixed(0)} 万吨</span></div>`).join('') : ''}
+      ${r.routes.length ? `<h3>线路排行（全年利润）</h3><table class="t"><tr><th>线路</th><th class="r">收入</th><th class="r">利润</th></tr>${r.routes.slice(0,8).map(x => `<tr><td>${esc(x.name)}</td><td class="num r">${W(x.rev)}</td><td class="num r ${x.net>=0?'pos':'neg'}">${W(x.net)}</td></tr>`).join('')}</table>` : ''}`;
+  }
+  function pFinance(){
+    const S = G.S; const y = G.ym(S.day).y; const h = S.history[S.history.length-1] || {};
+    const yr = S.history.filter(x => x.y === (h.y || y));
+    const sum = k => yr.reduce((a,x) => a + (x[k]||0), 0);
+    const row = (n, k, neg) => `<tr><td>${n}</td><td class="num r ${neg?'neg':''}">${h[k]!==undefined ? (neg ? NW(h[k]) : W(h[k])) : '—'}</td><td class="num r ${neg?'neg':''}">${neg ? NW(sum(k)) : W(sum(k))}</td></tr>`;
+    const trV = S.trains.reduce((a,t) => a + G.trainValue(t), 0), tkV = G.assets() - trV;
+    const lim = G.creditLimit();
+    const reps = S.reports || []; if (ui.repY === undefined || !reps.find(r => r.y === ui.repY)) ui.repY = reps.length ? reps[reps.length-1].y : null;
+    const repSel = reps.length ? `<h3>年度报告</h3><div class="row" style="flex-wrap:wrap;gap:4px;margin-bottom:8px">${reps.map(r => `<button class="btn sm ${r.y===ui.repY?'primary':''}" data-act="repY" data-y="${r.y}">${r.y}</button>`).join('')}</div><div class="card">${reportHTML(reps.find(r => r.y === ui.repY))}</div>` : `<h3>年度报告</h3><div class="dim">每年 12 月底生成年报。</div>`;
+    return `<h2>财务中心</h2>
+      <div class="grid3">
+        <div class="stat"><label>现金</label><b class="${S.cash<0?'neg':''}">${W(S.cash)}</b></div>
+        <div class="stat"><label>银行负债</label><b>${W(S.debt)}</b></div>
+        <div class="stat"><label>净资产</label><b class="gold">${W(G.netWorth())}</b></div>
+        <div class="stat"><label>商誉</label><b>${Math.round(S.rep ?? 50)}</b> ${repTag()}</div>
+        <div class="stat"><label>${S.ipo ? '股价' : '公司估值'}</label><b>${S.ipo ? S.ipo.price.toFixed(2) + ' 元' : W(G.valuation())}</b></div>
+        <div class="stat"><label>${S.ipo ? '总市值' : '未到期债券'}</label><b>${S.ipo ? W(G.marketCap()) : W((S.bonds||[]).reduce((a,b)=>a+b.amt,0))}</b></div>
+      </div>
+      ${monthBanner()}
+      <h3>月度收支（近 36 个月）</h3>
+      <canvas class="chart" id="finChart"></canvas>
+      <div class="legendrow"><span><i style="background:#2f4f3a"></i>总收入</span><span><i style="background:#ef6461"></i>经营支出</span><span><i style="background:#3f8a55"></i>经营净利</span></div>
+      <h3>损益表</h3>
+      <table class="t"><tr><th>科目</th><th class="r">上月 (${h.y||'—'}.${h.m||''})</th><th class="r">${h.y||y} 年累计</th></tr>
+        ${row('客运收入','pax')}${row('货运收入','freight')}${row('过轨费收入','feeIn')}${row('合同奖金/违约金','contract')}${row('车站商业','biz')}${row('地产租金','rent')}${row('公益慢车补贴','subsidy')}
+        ${row('列车运行成本','run',1)}${row('过轨费支出','fees',1)}${row('车辆维护','maint',1)}${row('线路养护','trackMaint',1)}${row('人力（高管与培训）','staff',1)}${row('研发投入','rd',1)}${row('贷款与债券利息','interest',1)}
+        <tr><td><b>经营净利</b></td><td class="num r ${h.net>=0?'pos':'neg'}"><b>${h.net!==undefined?W(h.net):'—'}</b></td><td class="num r ${sum('net')>=0?'pos':'neg'}"><b>${W(sum('net'))}</b></td></tr>
+        <tr><td class="dim">资本支出（建设与购车，扣除出售回款）</td><td class="num r dim">${h.capex!==undefined?W(h.capex):'—'}</td><td class="num r dim">${W(sum('capex'))}</td></tr>
+      </table>
+      <h3>资产负债</h3>
+      <dl class="kv"><dt>现金</dt><dd>${fmtY(S.cash)}</dd><dt>车辆资产（折旧后）</dt><dd>${fmtY(trV)}</dd><dt>线路资产（折旧后）</dt><dd>${fmtY(tkV)}</dd><dt>银行负债</dt><dd class="neg">${NW(S.debt)}元</dd><dt>土地（市值）</dt><dd>${fmtY(G.landValue())}</dd><dt>应付债券</dt><dd class="neg">${NW((S.bonds||[]).reduce((a,b)=>a+b.amt,0))}元</dd><dt><b>净资产</b></dt><dd class="gold"><b>${fmtY(G.netWorth())}</b></dd></dl>
+      ${repSel}
+      ${capitalHTML()}
+      <h3>银行贷款</h3>
+      <div class="card"><dl class="kv"><dt>授信额度</dt><dd>${fmtY(lim)}（商誉加成 ${G.repMul()>=1?"+":"−"}${Math.abs(Math.round((G.repMul()-1)*100))}%）</dd><dt>已用</dt><dd>${pct(S.debt/Math.max(1,lim))}</dd><dt>当前年利率</dt><dd>${(G.rate(y)*100).toFixed(2)}%</dd><dt>月利息</dt><dd>${fmtY(S.debt*G.rate(y)/12)}</dd></dl>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap"><button class="btn sm" data-act="borrow" data-v="1e7">借款 1000万</button><button class="btn sm" data-act="borrow" data-v="5e7">借款 5000万</button><button class="btn sm" data-act="borrow" data-v="2e8">借款 2亿</button>
+        <button class="btn sm" data-act="repay" data-v="1e7">还款 1000万</button><button class="btn sm" data-act="repay" data-v="1e12">全部还清</button></div></div>
+      <h3>自有线路过轨费率</h3>
+      <div class="card"><div class="row sb"><span>相对国铁基准费率</span><b class="num gold">${pct(S.feeMul)}</b></div>
+        <input type="range" min="50" max="200" step="10" value="${Math.round(S.feeMul*100)}" data-act="feeMul" style="width:100%;margin-top:6px">
+        <div class="dim" style="font-size:11px">费率越高单列收入越高，但国铁与同业的过轨列车会减少。上月过轨费收入：${W(h.feeIn||0)}</div></div>`;
+  }
+  function drawFinanceCharts(){ const c = $('#finChart'); if (!c) return; const H = G.S.history.slice(-36);
+    chart(c, H.map(h => `${h.y}.${h.m}`), [
+      { name:'收入', color:'#2f4f3a', data:H.map(h => h.rev), fill:true },
+      { name:'支出', color:'#ef6461', data:H.map(h => h.opex) },
+      { name:'净利', color:'#3f8a55', data:H.map(h => h.net) } ]); }
+  function chart(c, labels, series, fmt){
+    const r = c.getBoundingClientRect(); const dpr = window.devicePixelRatio || 1; c.width = r.width*dpr; c.height = r.height*dpr;
+    const x = c.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0); const w = r.width, h = r.height, pl = 52, pr = 10, pt = 10, pb = 22;
+    x.clearRect(0,0,w,h);
+    if (labels.length < 2){ x.fillStyle = '#6d7f99'; x.font = '12px sans-serif'; x.fillText('数据积累中（每月结算后更新）', w/2-90, h/2); return; }
+    let mn = 0, mx = 1; series.forEach(s => s.data.forEach(v => { mn = Math.min(mn, v); mx = Math.max(mx, v); }));
+    const span = (mx - mn) || 1; mx += span*0.08; if (mn < 0) mn -= span*0.08;
+    const X = i => pl + (w-pl-pr) * i/(labels.length-1), Y = v => pt + (h-pt-pb) * (1 - (v-mn)/(mx-mn));
+    x.font = '10px Menlo, monospace'; x.fillStyle = '#6d7f99'; x.strokeStyle = 'rgba(255,255,255,.06)'; x.lineWidth = 1;
+    for (let k = 0; k <= 4; k++){ const v = mn + (mx-mn)*k/4; const yy = Y(v); x.beginPath(); x.moveTo(pl, yy); x.lineTo(w-pr, yy); x.stroke(); x.fillText(Math.abs(v) < 1 ? '0' : (fmt || W)(v).replace(' ',''), 4, yy+3); }
+    if (mn < 0){ x.strokeStyle = 'rgba(255,255,255,.25)'; x.beginPath(); x.moveTo(pl, Y(0)); x.lineTo(w-pr, Y(0)); x.stroke(); }
+    const step = Math.ceil(labels.length / 6); labels.forEach((l,i) => { if (i % step === 0) x.fillText(l, X(i)-14, h-6); });
+    series.forEach(s => {
+      x.beginPath(); s.data.forEach((v,i) => i ? x.lineTo(X(i), Y(v)) : x.moveTo(X(i), Y(v)));
+      x.strokeStyle = s.color; x.lineWidth = 2; x.stroke();
+      if (s.fill){ x.lineTo(X(s.data.length-1), Y(Math.max(0,mn))); x.lineTo(X(0), Y(Math.max(0,mn))); x.closePath(); const g = x.createLinearGradient(0,pt,0,h-pb); g.addColorStop(0, s.color+'55'); g.addColorStop(1, s.color+'00'); x.fillStyle = g; x.fill(); }
+    });
+  }
+
+  // —— 政策 ——
+  function pPolicy(){
+    const S = G.S; const y = G.ym(S.day).y;
+    const done = POLICIES.filter(p => S.policies.includes(p.id)); const next = POLICIES.filter(p => !S.policies.includes(p.id));
+    return `<h2>政策环境</h2>
+      <div class="hint" style="margin-bottom:10px">国铁的新线与提速按历史进程推进，但如果你抢先修建，历史将被改写。新政策出台时会第一时间通知你。</div>
+      <div class="grid2">
+        <div class="stat"><label>车辆进口关税</label><b>${pct(S.mods.tariff)}</b></div>
+        <div class="stat"><label>年度进口额度</label><b>${S.mods.importQuota>=99?'不限':S.mods.importQuota+' 列'}</b></div>
+        <div class="stat"><label>建设补贴（全国/中西部/高铁）</label><b>${pct(S.mods.buildSubsidy)} / ${pct(S.mods.westSubsidy)} / ${pct(S.mods.hsrSubsidy)}</b></div>
+        <div class="stat"><label>国铁过轨基准费</label><b>${G.stateFeeBase(y).toFixed(1)}</b><small> 元/列km</small></div>
+        <div class="stat"><label>物价指数 (1985=1)</label><b>${G.cpi(y).toFixed(2)}</b></div>
+        <div class="stat"><label>贷款年利率</label><b>${(G.rate(y)*100).toFixed(2)}%</b></div>
+      </div>
+      <h3>政策时间线</h3>
+      <div class="timeline">
+        ${done.map(p => `<div class="tl"><span class="y">${p.y}.${String(p.m).padStart(2,'0')}</span> <span class="tag gold">${p.tag}</span><div><b>${p.title}</b></div><div class="muted" style="font-size:12px">${p.text}</div><div style="font-size:12px;margin-top:2px">${p.effects.map(x => '· ' + x).join('<br>')}</div></div>`).join('')}
+        ${next.slice(0,1).map(p => `<div class="tl future"><span class="y">${p.y} 年前后</span><div class="muted"><b>坊间传闻：</b>${p.tag}方面将有新动向……</div></div>`).join('')}
+        ${next.length > 1 ? `<div class="tl future"><span class="y">……</span><div class="dim">还有 ${next.length-1} 项政策尚未公布</div></div>` : ''}
+      </div>`;
+  }
+
+  function rivalCompHTML(){
+    const S = G.S; G.ensureT4(); const act = S.rivals.filter(r => r.active && !r.acquired);
+    let h = `<h3>竞争态势</h3>`; const items = [];
+    act.forEach(r => { const D = RIVAL[r.id], w = G.warOf(r.id);
+      if (w) items.push(`<div class="card warn"><div class="row sb"><b><span class="swatch" style="background:${D.color}"></span>${D.name} · 价格战</b><span class="tag red">剩 ${Math.max(0, Math.ceil((w.until - S.day)/30))} 个月</span></div>
+        <div style="font-size:12px;margin:4px 0">波及 ${w.cities.slice(0,6).map(c => C[c].name).join('、')}${w.cities.length>6?' 等':''}。${w.resp==='match' ? '你已跟进降价：重叠城市之间票价 −15%，客源基本保住，对方消耗更快。' : w.resp==='hold' ? '你保持原价：重叠城市间约四分之一客源流失。' : '尚未应对，客源正在流失。'}</div>
+        <div class="row" style="justify-content:flex-end;gap:6px"><button class="btn sm ${w.resp==='hold'?'primary':''}" data-act="warResp" data-id="${r.id}" data-v="hold">保持票价</button><button class="btn sm ${w.resp==='match'?'primary':''}" data-act="warResp" data-id="${r.id}" data-v="match">跟进降价</button></div></div>`);
+      if (r.plan) { const e = E[r.plan.e]; const d = Math.max(0, Math.ceil((r.plan.at - S.day)/30));
+        items.push(`<div class="card"><div class="row sb"><b><span class="swatch" style="background:${D.color}"></span>${D.name} · 筹建情报</b><span class="tag">约 ${d} 个月后开工</span></div>
+        <div style="font-size:12px;margin:4px 0">计划修建 ${C[e.a].name}—${C[e.b].name}（${e.dist} km，${G.TRACK_CLASSES[r.plan.cls].name}）。在对方开工前抢先动工，这条走廊就归你。</div>
+        <div class="row" style="justify-content:flex-end"><button class="btn sm" data-act="selEdge" data-e="${e.i}">查看走廊 →</button></div></div>`); }
+    });
+    if (S.ipo) { const ctl = G.controlPct(), dq = G.diluteQuote();
+      const holders = act.filter(r => r.stake > 0);
+      items.push(`<div class="card"><div class="row sb"><b>股权与控制权</b><span class="num">你方控制 ${(ctl*100).toFixed(1)}%</span></div>
+        ${holders.length ? holders.map(r => { const p = G.raidPct(r.id), q = G.greenmailQuote(r.id); return `<div class="region"><span style="white-space:nowrap"><span class="swatch" style="background:${RIVAL[r.id].color}"></span>${RIVAL[r.id].name}</span><div class="bar ${p > ctl*0.8 ? 'r' : ''}"><i style="width:${Math.min(100, p/ctl*100)}%"></i></div><span class="num r ${p > ctl*0.8 ? 'neg' : ''}">${(p*100).toFixed(1)}%</span></div>
+          <div class="row" style="justify-content:flex-end;margin-bottom:4px"><button class="btn sm" data-act="greenmail" data-id="${r.id}" ${q && S.cash >= q.cost ? '' : 'disabled'}>溢价回购 ${q ? W(q.cost) : ''}</button></div>`; }).join('')
+          : `<div class="dim" style="font-size:12px;margin:4px 0">目前没有同业持有本公司股份。股价明显低于内在价值时，资金充裕的同业可能在二级市场举牌。</div>`}
+        <div class="row sb" style="margin-top:6px;font-size:12px"><span class="dim">同业持股一旦超过你方控制比例，公司即被收购。增发会摊薄你方比例。</span>
+        <button class="btn sm" data-act="dilute" ${dq && dq.wait <= 0 ? '' : 'disabled'} title="向友好投资者定向增发 12%（每 24 个月一次），股价 −6%，商誉 −1">定向增发 12%${dq && dq.wait > 0 ? ` · ${Math.ceil(dq.wait/30)} 个月后` : ''}</button></div></div>`); }
+    h += items.length ? items.join('') : `<div class="dim">各家同业目前按部就班。它们准备修线时会先走漏风声，现金充裕时可能在与你重叠的城市间发起价格战。</div>`;
+    return h;
+  }
+  // —— 重大项目：干线经营权、超级工程、海外项目 ——
+  function frCard(f, inModal){ const S = G.S, y = G.ym(S.day).y, A = inModal ? 'data-m' : 'data-act';
+    const head = `<div class="row sb"><b>${esc(f.name)}</b><span class="dim">${C[f.a].name}—${C[f.b].name} · ${f.km.toLocaleString()} km</span></div>`;
+    const cities = `<div class="dim" style="font-size:11px;margin:3px 0">沿线 ${f.path.filter(c => !G.cities[c].tier || G.cities[c].tier === 1).map(c => C[c].name).join('、')}</div>`;
+    if (f.st === 'bid') return `<div class="card gov">${head}${cities}
+      <dl class="kv"><dt>经营期</dt><dd>${G.FR_YEARS} 年，独家开行社会资本旅客列车</dd><dt>中标好处</dt><dd>沿线城市之间客源份额 +25%，国铁过轨费减半</dd><dt>履约要求</dt><dd>每月在干线上开行不少于 ${f.minTrips} 趟旅客列车</dd><dt>年费底价</dt><dd class="num">${W(f.reserve)}元</dd><dt>我方报价</dt><dd class="num ${f.bid?'gold':''}">${f.bid ? W(f.bid) + '元/年' : '未投标'}</dd><dt>开标</dt><dd>${Math.max(0, Math.ceil((f.close - S.day)/30))} 个月后</dd></dl>
+      <div class="row" style="justify-content:flex-end;gap:6px;margin-top:6px;flex-wrap:wrap">${f.bid ? `<button class="btn sm" ${A}="frBid" data-id="${f.uid}" data-v="0">撤回报价</button>` : ''}${[1, 1.25, 1.5].map(k => `<button class="btn sm ${Math.abs(f.bid - f.reserve*k) < 1 ? 'primary' : ''}" ${A}="frBid" data-id="${f.uid}" data-v="${k}">报价 ${k === 1 ? '底价' : '×' + k}</button>`).join('')}</div>
+      <div class="dim" style="font-size:11px;margin-top:4px">报价越高越容易中标；商誉高也有加分。同业公司也会参与竞标。</div></div>`;
+    if (f.st === 'held') { const me = f.holder === 'P', left = Math.max(0, Math.ceil((f.until - S.day)/365*10)/10);
+      const n = me ? (f.lastTrips !== undefined ? f.lastTrips : G.frTrips(f)) : 0, r = me ? Math.min(1, n / f.minTrips) : 0;
+      return `<div class="card ${me ? '' : 'warn'}">${head}<div style="font-size:12px;margin:4px 0">${me ? `<span class="tag green">本公司经营</span> 剩 ${left} 年 · 年费 ${W(f.fee)}元` : `<span class="tag red">${esc((RIVAL[f.holder] || { name:"地方国资联合体" }).name)} 经营</span> 剩 ${left} 年，你在沿线城市之间的客源被分流约 20%`}</div>
+        ${me ? `<div class="region"><span>月开行</span><div class="bar ${r>=1?'g':''}"><i style="width:${r*100}%"></i></div><span class="num r ${r>=1?'pos':'neg'}">${Math.round(n)} / ${f.minTrips} 趟</span></div>${f.strikes ? `<div class="neg" style="font-size:11px">未达标 ${f.strikes}/3 次，满 3 次将被收回经营权</div>` : ''}` : ''}</div>`; }
+    return ''; }
+  function superCard(sp){ const S = G.S, st = (S.supers || {})[sp.id], q = G.superQuote(sp.id), e = E[sp.e];
+    let body = '';
+    if (!st) body = `<dl class="kv"><dt>线路</dt><dd>${C[e.a].name}—${C[e.b].name} · ${e.dist.toLocaleString()} km · ${sp.v} km/h${sp.plateau ? ' · 高原' : ''}</dd><dt>总投资</dt><dd class="num">${W(q.cost)}元</dd><dt>工期</dt><dd>${Math.round(sp.months/12)} 年</dd><dt>出资方式</dt><dd>首期 15%（${W(q.first)}元），其余每月 ${W(q.monthly)}元</dd><dt>建成奖励</dt><dd>商誉 +8，线路归本公司所有</dd></dl>
+      ${q.why.length ? `<div class="neg" style="font-size:12px;margin-top:4px">${q.why.join('；')}</div>` : ''}<div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn sm ${q.ok?'primary':''}" data-act="super" data-id="${sp.id}" ${q.ok?'':'disabled'}>${ui.confirm==='sp'+sp.id ? '确认立项' : '立项开工'}</button></div>`;
+    else if (st.st === 'build') { const tr = S.tracks.find(x => x.id === st.tr); const r = st.paid / st.cost; const ml = tr ? Math.max(0, Math.ceil((tr.done - S.day)/30)) : 0;
+      body = `<div class="region"><span>已投资</span><div class="bar"><i style="width:${r*100}%"></i></div><span class="num r">${pct(r)}</span></div><div style="font-size:12px">${W(st.paid)} / ${W(st.cost)}元 · 每月拨付 ${W(st.monthly)}元 · 预计 ${ml} 个月后通车${st.late ? `<span class="neg">（因资金不足已顺延 ${st.late} 个月）</span>` : ''}</div>`; }
+    else body = `<div style="font-size:12px"><span class="tag green">已建成通车</span> ${C[e.a].name}—${C[e.b].name} ${e.dist} km，已并入本公司路网，可以开行列车。</div>`;
+    return `<div class="card"><div class="row sb"><b>${sp.name}</b><span class="tag blue">${sp.kind}</span></div><div style="font-size:12px;margin:4px 0">${sp.desc}</div>${body}</div>`; }
+  function ovCard(o){ const S = G.S, x = (S.overseas || []).find(q => q.id === o.id), q = G.ovQuote(o.id);
+    let body = '';
+    if (!x) body = `<dl class="kv"><dt>规模</dt><dd>${o.km} km · ${o.v} km/h</dd><dt>总投资</dt><dd class="num">${W(q.cost)}元</dd><dt>工期</dt><dd>${Math.round(o.months/12)} 年</dd><dt>运营收益</dt><dd class="pos">约 ${W(q.yearly)}元/年，共 20 年（静态回收约 ${q.payback.toFixed(1)} 年）</dd><dt>现金节奏</dt><dd>约 3 个月开标；中标后 ${Math.round(o.months/12)} 年内每月投入约 ${W(q.cost / o.months)}元，通车后才有收益${q.endsAfter2020 ? '；通车将晚于 2020 年计分期，可继续自由经营收取' : ''}</dd><dt>投标费用</dt><dd>${W(q.fee)}元</dd><dt>中标把握</dt><dd>约 ${pct(q.winP)}</dd></dl>
+      ${q.why.length ? `<div class="neg" style="font-size:12px;margin-top:4px">${q.why.join('；')}</div>` : ''}<div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn sm ${q.ok?'primary':''}" data-act="ovBid" data-id="${o.id}" ${q.ok?'':'disabled'}>参与投标</button></div>`;
+    else if (x.st === 'bid') body = `<div style="font-size:12px"><span class="tag">已投标</span> 约 ${Math.max(0, Math.ceil((x.at - S.day)/30))} 个月后公布结果</div>`;
+    else if (x.st === 'lost') body = `<div style="font-size:12px"><span class="tag red">落标</span> 业主国选择了其他方案</div>`;
+    else if (x.st === 'build') { const r = x.paid / x.cost; body = `<div class="region"><span>已投资</span><div class="bar"><i style="width:${r*100}%"></i></div><span class="num r">${pct(r)}</span></div><div style="font-size:12px">${W(x.paid)} / ${W(x.cost)}元 · 预计 ${Math.max(0, Math.ceil((x.done - S.day)/30))} 个月后通车</div>`; }
+    else if (x.st === 'run') body = `<div style="font-size:12px"><span class="tag green">运营中</span> 每年收益约 ${W(x.cost * o.ret)}元，运营权剩 ${Math.max(0, Math.ceil((x.until - S.day)/365))} 年</div>`;
+    else body = `<div class="dim" style="font-size:12px">运营期已结束</div>`;
+    return `<div class="card"><div class="row sb"><b>${o.name}</b><span class="tag">海外</span></div><div style="font-size:12px;margin:4px 0">${o.desc}</div>${body}</div>`; }
+  function pProjects(){ const S = G.S; G.ensureT6(); const y = G.ym(S.day).y;
+    const open = S.franch.filter(f => f.st === 'bid'), held = S.franch.filter(f => f.st === 'held');
+    const ovInc = S.history.slice(-12).reduce((a, h) => a + (h.overseas || 0), 0);
+    let h = `<h2>重大项目</h2><div class="grid3"><div class="stat"><label>持有干线经营权</label><b>${held.filter(f => f.holder === 'P').length}</b></div><div class="stat"><label>超级工程</label><b>${Object.values(S.supers).filter(x => x.st === 'done').length} / ${G.SUPER.length}</b><small> 建成</small></div><div class="stat"><label>近 12 月海外收益</label><b class="${ovInc>0?'pos':''}">${W(ovInc)}</b></div></div>`;
+    h += `<h3>干线经营权招标</h3>`;
+    if (y < 1998 && !S.franch.length) h += `<div class="dim">1998 年起，铁路主管部门将陆续招标国铁干线的客运经营权：中标者在 ${G.FR_YEARS} 年内取得优先经营权（沿线客源 +25%、过轨费减半），其他公司仍可开行但客源被分流。</div>`;
+    else if (!open.length && !held.length) h += `<div class="dim">目前没有招标中的干线。每年春季和秋季可能发布新的招标。</div>`;
+    h += open.map(f => frCard(f)).join('') + held.map(f => frCard(f)).join('');
+    h += `<h3>超级工程</h3><div class="hint">国家级重大工程向社会资本开放：投资巨大、工期漫长，但建成后线路归你所有，还能赢得商誉。工程款按月拨付，现金不足的月份会顺延工期。</div>` + G.SUPER.map(superCard).join('');
+    h += `<h3>海外项目 · 出口高铁</h3><div class="hint">带着中国标准走出去：中标后按月投资建设，建成后获得 20 年运营收益。高速项目要求你有 300 km 以上自有高铁运营经验，或拥有自主研发的车型。</div>` + G.OVERSEAS.map(ovCard).join('');
+    return h; }
+
+  // —— 同业 ——
+  function pRivals(){
+    const S = G.S;
+    const km = o => S.tracks.filter(t => t.owner===o && t.status==='ok').reduce((a,t) => a + E[t.e].dist, 0);
+    const rows = [{ name:S.company, color:'#f2b544', km:km('P'), val:G.netWorth(), n:S.tracks.filter(t=>t.owner==='P').length, me:true }]
+      .concat(S.rivals.filter(r => r.active).map(r => ({ name:RIVAL[r.id].name, color:RIVAL[r.id].color, km:km(r.id), val:r.value, n:S.tracks.filter(t=>t.owner===r.id).length, home:RIVAL[r.id].home })));
+    rows.sort((a,b) => b.val - a.val);
+    const stateKm = km('S');
+    return `<h2>同业竞争</h2>
+      <table class="t"><tr><th>#</th><th>公司</th><th class="r">自有线路</th><th class="r">资产估值</th></tr>
+      ${rows.map((r,i) => `<tr ${r.me?'style="background:rgba(242,181,68,.07)"':''}><td class="num">${i+1}</td><td><span class="swatch" style="background:${r.color}"></span><b>${esc(r.name)}</b>${r.home?` <span class="dim">总部 ${r.home}</span>`:''}</td><td class="num r">${r.km.toLocaleString()} km</td><td class="num r">${W(r.val)}</td></tr>`).join('')}
+      </table>
+      <div class="dim" style="font-size:11px;margin-top:4px">国家铁路营业里程（本图）：${stateKm.toLocaleString()} km</div>
+      ${rivalCompHTML()}
+      <h3>兼并收购</h3>
+      ${S.rivals.filter(r => r.active).map(r => { const q = G.acquireQuote(r.id); return `<div class="card"><div class="row sb"><span><span class="swatch" style="background:${RIVAL[r.id].color}"></span><b>${RIVAL[r.id].name}</b></span><span class="num">报价 ${W(q.price)}</span></div>
+        <div style="font-size:12px;margin:4px 0">线路 ${q.km.toLocaleString()} km · ${q.cash >= 0 ? `对方现金 ${W(q.cash)}（并入本公司）` : `承接对方负债 ${W(-q.cash)}`}· 实际支出 ${W(q.net)}</div>
+        ${q.ok ? '' : `<div class="neg" style="font-size:12px">${q.why.join('；')}</div>`}
+        <div class="row" style="justify-content:flex-end"><button class="btn sm ${q.ok?'primary':''}" data-act="acquire" data-id="${r.id}" ${q.ok?'':'disabled'}>${ui.confirm==='a'+r.id ? '确认收购' : '发起收购'}</button></div></div>`; }).join('') || '<div class="dim">没有可收购的同业公司。</div>'}
+      ${S.rivals.filter(r => r.acquired).map(r => `<div class="dim" style="font-size:12px">· ${RIVAL[r.id].name} 已于 ${r.acquired} 年并入本公司</div>`).join('')}
+      <div class="dim" style="font-size:11px;margin-top:4px">1995 年起可收购规模小于本公司净资产 60% 的同业。收购价为对方资产估值的 1.3 倍，另加每公里线路的网络溢价；对方线路并入后，你的列车免付过轨费。</div>
+      <h3>同业线路</h3>
+      ${S.rivals.filter(r => r.active).map(r => { const ts = S.tracks.filter(t => t.owner===r.id);
+        return `<div class="card"><div class="row"><span class="swatch" style="background:${RIVAL[r.id].color}"></span><b>${RIVAL[r.id].name}</b><span class="dim" style="margin-left:auto">${ts.length} 段</span></div>
+          ${ts.length ? `<div style="margin-top:6px;font-size:12px;line-height:1.9">${ts.map(t => `<span class="tag" style="margin:0 4px 4px 0">${C[E[t.e].a].name}—${C[E[t.e].b].name} · ${t.v}${t.status==='build'?' 在建':''}</span>`).join('')}</div>` : '<div class="dim">尚未修建线路</div>'}</div>`; }).join('')}
+      <div class="hint">同业公司会在其网络周边修建新线。当它们的网络与你的自有线路相连时，会有同业列车过轨并向你付费；你的列车使用同业线路时，费率为国铁基准的 115%。</div>`;
+  }
+
+  // ---------------- 操作分发 ----------------
+  function act(e){
+    const b = e.target.closest('[data-act]'); if (!b) return;
+    const a = b.dataset.act; const S = G.S;
+    if (e.type === 'click' && (b.tagName === 'SELECT' || (b.tagName === 'INPUT' && b.type !== 'checkbox' && b.type !== 'radio'))) return;
+    if (e.type === 'click' && b.tagName === 'INPUT' && (b.type==='checkbox'||b.type==='radio')) {
+      if (a === 'bCls'){ ui.bCls = +b.value; renderPanel(true); }
+      if (a === 'bElec'){ ui.bElec = b.checked; renderPanel(true); }
+      return;
+    }
+    switch (a){
+      case 'routeFrom': startRoute(+b.dataset.c); break;
+      case 'repY': ui.repY = +b.dataset.y; renderPanel(true); break;
+      case 'od': { const id = +b.dataset.id; ui.odRoute = ui.odRoute === id ? null : id; renderPanel(true); break; }
+      case 'station': { const r = G.buildStation(+b.dataset.c, +b.dataset.lv); if (!r.ok) toast('无法开站', r.msg, 'bad'); else toast('车站开工', `${C[+b.dataset.c].name}站开始施工。`, 'good'); renderInspector(); renderPanel(true); break; }
+      case 'skip': { G.toggleSkip(+b.dataset.id, +b.dataset.c); renderPanel(true); break; }
+      case 'buildGrp': { if (b.dataset.loan) G.borrow(+b.dataset.loan); const cls = ui.bCls||0; const r = G.buildGroup(+b.dataset.g, cls, cls >= 2 || !!ui.bElec); if (!r.ok) toast('无法开工', r.msg, 'bad'); else toast('整段开工', '整条走廊的各区段同时开工。', 'good'), snd('build'); renderPanel(true); break; }
+      case 'newRoute': startRoute(); break;
+      case 'selEdge': ui.selEdge = +b.dataset.e; ui.selCity = null; ui.tab = 'build'; renderTabs(); renderInspector(); renderPanel(true); break;
+      case 'build': { if (b.dataset.loan) G.borrow(+b.dataset.loan); const r = G.buildTrack(+b.dataset.e, ui.bCls||0, (ui.bCls||0) >= 2 || !!ui.bElec); if (!r.ok) toast('无法开工', r.msg, 'bad'); else toast('开工建设', '工程已启动，可在建设页查看工期。', 'good'), snd('build'); renderPanel(true); renderInspector(); break; }
+      case 'upgrade': { const c = +b.dataset.c; const tr = S.tracks.find(t => t.id === +b.dataset.tr); const r = G.upgradeTrack(tr.id, c, c >= 2 || tr.elec || true); if (!r.ok) toast('无法改造', r.msg, 'bad'); renderPanel(true); break; }
+      case 'selRoute': { const id = +b.dataset.id; ui.selRoute = ui.selRoute === id ? null : id; renderPanel(true); break; }
+      case 'delRoute': { const id = +b.dataset.id; if (ui.confirm === 'r'+id){ G.deleteRoute(id); ui.confirm = null; if (ui.selRoute===id) ui.selRoute = null; } else { ui.confirm = 'r'+id; setTimeout(() => { if (ui.confirm==='r'+id){ ui.confirm = null; renderPanel(true); } }, 3000); } renderPanel(true); break; }
+      case 'buyFor': ui.buyRoute = +b.dataset.id; ui.tab = 'market'; renderTabs(); renderPanel(true); $('#panelBody').scrollTop = 0; break;
+      case 'consist': { const t = S.trains.find(x => x.id === +b.dataset.id); ui.cdraft = { tid:t.id, n:{} }; (t.cars||[]).forEach(x => ui.cdraft.n[x.id] = x.n); consistModal(); break; }
+      case 'acceptUsed': { const r = G.acceptUsed(+b.dataset.id); if (!r.ok) toast('无法成交', r.msg, 'bad'); else { toast('转让成交', `收到 ${W(r.price)}元。`, 'good'); snd('coin'); } renderPanel(true); renderTop(); break; }
+      case 'declineUsed': G.declineUsed(+b.dataset.id); renderPanel(true); break;
+      case 'sell': { const id = +b.dataset.id; if (ui.confirm === 't'+id){ G.sellTrain(id); ui.confirm = null; } else { ui.confirm = 't'+id; setTimeout(() => { if (ui.confirm==='t'+id){ ui.confirm = null; renderPanel(true); } }, 3000); } renderPanel(true); break; }
+      case 'mf': ui.mf[b.dataset.k] = b.dataset.v; renderPanel(true); break;
+      case 'buy': { const sel = $('#br_' + b.dataset.m); const rid = sel && sel.value ? +sel.value : null; const r = G.buyTrain(b.dataset.m, rid); if (!r.ok) toast('无法购买', r.msg, 'bad'); else snd('tick'), toast('订购成功', `${G.trainById[b.dataset.m].name} 将于 ${G.trainById[b.dataset.m].imported?'约 75':'约 30'} 天后交付${rid?'，届时自动投入运营':''}。`, 'good'); renderPanel(true); break; }
+      case 'acceptC': { const r = G.acceptContract(+b.dataset.id); if (!r.ok) toast('无法签约', r.msg, 'bad'); else snd('coin'), toast('签约成功', '合同货量已计入该站对的货源。', 'good'); renderPanel(true); break; }
+      case 'declineC': { G.declineContract(+b.dataset.id); renderPanel(true); break; }
+      case 'overhaul': { const r = G.overhaul(+b.dataset.id); if (!r.ok) toast('无法大修', r.msg, 'bad'); else toast('进厂大修', `费用 ${W(r.cost)}元，30 天后出厂。`, 'good'); renderPanel(true); renderTop(); break; }
+      case 'bond': { const r = G.issueBond(+b.dataset.v); if (!r.ok) toast('无法发债', r.msg, 'bad'); else toast('发债成功', `利率 ${(r.b.rate*100).toFixed(2)}%，募集 ${W(r.b.amt)}元。`, 'good'); renderPanel(true); renderTop(); break; }
+      case 'ipo': { const r = G.doIPO(); if (!r.ok) toast('无法上市', r.msg, 'bad'); renderPanel(true); renderTop(); showPolicyQueue(); break; }
+      case 'payout': { G.setPayout(+b.dataset.v); renderPanel(true); break; }
+      case 'secondary': { const r = G.secondary(); if (!r.ok) toast('无法增发', r.msg, 'bad'); else toast('增发完成', '募集资金已到账。', 'good'); renderPanel(true); renderTop(); break; }
+      case 'buyback': { const r = G.buyback(); if (!r.ok) toast('无法回购', r.msg, 'bad'); else toast('回购完成', `耗资 ${W(r.cost)}元。`, 'good'); renderPanel(true); renderTop(); break; }
+      case 'acquire': { const id = b.dataset.id; if (ui.confirm === 'a'+id){ const r = G.acquireRival(id); ui.confirm = null; if (!r.ok) toast('无法收购', r.msg, 'bad'); renderTop(); showPolicyQueue(); } else { ui.confirm = 'a'+id; setTimeout(() => { if (ui.confirm==='a'+id){ ui.confirm = null; renderPanel(true); } }, 3000); } renderPanel(true); break; }
+      case 'hire': { const r = G.hireExec(+b.dataset.id); if (!r.ok) toast('无法聘请', r.msg, 'bad'); else toast('聘任成功', '新高管已到任。', 'good'); renderPanel(true); renderTop(); break; }
+      case 'fire': { G.fireExec(b.dataset.v); renderPanel(true); renderTop(); break; }
+      case 'trainLv': { G.setTraining(+b.dataset.v); renderPanel(true); break; }
+      case 'rdLv': { G.setRD(+b.dataset.v); renderPanel(true); break; }
+      case 'rdStart': { const r = G.startProject(b.dataset.v); if (!r.ok) toast('无法立项', r.msg, 'bad'); renderPanel(true); break; }
+      case 'shop': { const r = G.buildShop(+b.dataset.c, +b.dataset.v); if (!r.ok) toast('无法开设', r.msg, 'bad'); else toast('车站商业开业', C[+b.dataset.c].name + '站商铺开始营业。', 'good'); renderPanel(true); renderTop(); break; }
+      case 'land': { const r = G.buyLand(+b.dataset.c); if (!r.ok) toast('无法买地', r.msg, 'bad'); else toast('购入土地', `${C[+b.dataset.c].name} · ${W(r.cost)}元`, 'good'); renderPanel(true); renderInspector(); renderTop(); break; }
+      case 'sellLand': { const r = G.sellLand(+b.dataset.c); if (!r.ok) toast('无法卖地', r.msg, 'bad'); else toast('出售土地', (r.gain >= 0 ? '增值 ' : '亏损 ') + W(Math.abs(r.gain)) + '元', r.gain >= 0 ? 'good' : 'bad'); renderPanel(true); renderInspector(); renderTop(); break; }
+      case 'acceptL': { const r = G.acceptLocal(+b.dataset.id); if (!r.ok) toast('无法同意', r.msg, 'bad'); else toast('达成合作', '协议已生效。', 'good'); renderPanel(true); break; }
+      case 'frBid': { const r = G.frBid(+b.dataset.id, +b.dataset.v); if (!r.ok) toast('无法投标', r.msg, 'bad'); renderPanel(true); break; }
+      case 'super': { const id = b.dataset.id; if (ui.confirm === 'sp'+id){ ui.confirm = null; const r = G.startSuper(id); if (!r.ok) toast('无法立项', r.msg, 'bad'); else { toast('超级工程开工', G.SUPER.find(x => x.id === id).name + '正式开工。', 'good'); snd('build'); } } else { ui.confirm = 'sp'+id; setTimeout(() => { if (ui.confirm==='sp'+id){ ui.confirm = null; renderPanel(true); } }, 3000); } renderPanel(true); renderTop(); break; }
+      case 'ovBid': { const r = G.ovBid(b.dataset.id); if (!r.ok) toast('无法投标', r.msg, 'bad'); else toast('已投标', '约三个月后公布结果。', 'good'); renderPanel(true); renderTop(); break; }
+      case 'govAcc': { G.govAccept(+b.dataset.id); toast('接受任务', '可在「合同」页查看进度。', 'good'); renderPanel(true); break; }
+      case 'govDec': { G.govDecline(+b.dataset.id); renderPanel(true); break; }
+      case 'warResp': { G.warRespond(b.dataset.id, b.dataset.v); renderPanel(true); break; }
+      case 'dilute': { const r = G.defendDilute(); if (!r.ok) toast('无法增发', r.msg, 'bad'); else toast('定向增发完成', '同业持股比例已被摊薄。', 'good'); renderPanel(true); break; }
+      case 'greenmail': { const r = G.defendGreenmail(b.dataset.id); if (!r.ok) toast('无法回购', r.msg, 'bad'); else toast('回购完成', '对方持股已全部注销。', 'good'); renderPanel(true); break; }
+      case 'declineL': { G.declineLocal(+b.dataset.id); renderPanel(true); break; }
+      case 'svc': { G.setService(+b.dataset.id, +b.dataset.v); renderPanel(true); break; }
+      case 'grade': { G.setGrade(+b.dataset.id, b.dataset.v); renderPanel(true); break; }
+      case 'depot': { const r = G.buildDepot(+b.dataset.c, +b.dataset.v); if (!r.ok) toast('无法开工', r.msg, 'bad'); else { toast('机务段开工', `${C[+b.dataset.c].name}${G.DEPOT_LV[+b.dataset.v].name}开工。`, 'good'); snd('build'); } renderPanel(true); renderInspector(); renderTop(); break; }
+      case 'signal': { const r = G.upgradeSignal(+b.dataset.tr, +b.dataset.v); if (!r.ok) toast('无法改造', r.msg, 'bad'); else toast('信号改造开工', '完工后通过能力提升。', 'good'); renderPanel(true); renderTop(); break; }
+      case 'borrow': { if (!G.borrow(+b.dataset.v)) toast('无法借款', '授信额度不足。', 'bad'); renderPanel(true); break; }
+      case 'repay': { if (!G.repay(+b.dataset.v)) toast('无法还款', '没有负债或现金不足。', 'bad'); renderPanel(true); break; }
+    }
+    renderTop();
+  }
+  $('#panelBody').addEventListener('click', act);
+  $('#panelBody').addEventListener('change', e => {
+    const b = e.target.closest('[data-act]'); if (!b) return; const a = b.dataset.act; const S = G.S;
+    if (a === 'assign'){ G.assignTrain(+b.dataset.id, b.value ? +b.value : null); b.blur(); renderPanel(true); }
+    if (a === 'routePref'){ const r = S.routes.find(r => r.id === +b.dataset.id); r.pref = b.value; G.recompute(); b.blur(); renderPanel(true); }
+    if (a === 'slow'){ G.setSlow(+b.dataset.id, b.checked); renderPanel(true); }
+    if (a === 'feeMul'){ S.feeMul = +b.value/100; b.blur(); renderPanel(true); }
+  });
+
+  // ---------------- 提示与弹窗 ----------------
+  const snd = (n, k) => { if (window.Sfx) Sfx.play(n, k); };
+  function toast(title, text, kind){ const el = document.createElement('div'); el.className = 'toast ' + (kind||''); el.innerHTML = `<b>${esc(title)}</b><span>${esc(text)}</span>`; $('#toast').prepend(el); setTimeout(() => el.remove(), 4200); while ($('#toast').children.length > 4) $('#toast').lastChild.remove(); }
+  function modal(html, wide){ $('#modalBox').className = 'box' + (wide ? ' wide' : ''); $('#modalBox').innerHTML = html; $('#modal').classList.add('show'); ui.modalOpen = true; }
+  function closeModal(){ $('#modal').classList.remove('show'); ui.modalOpen = false; }
+  $('#modal').addEventListener('click', e => {
+    const cb = e.target.closest('[data-cm]');
+    if (cb && !cb.disabled){ const k = cb.dataset.cm, d = ui.cdraft, id = cb.dataset.id;
+      if (k === 'inc') d.n[id] = (d.n[id]||0) + 1; if (k === 'inc5') d.n[id] = (d.n[id]||0) + 5; if (k === 'dec') d.n[id] = Math.max(0, (d.n[id]||0) - 1);
+      if (k === 'ok'){ const r = G.setConsist(d.tid, Object.entries(d.n).map(([id,n]) => ({ id, n }))); if (!r.ok) { toast('无法编组', r.msg, 'bad'); return; } closeModal(); toast('编组完成', r.net >= 0 ? `支出 ${W(r.net)}元` : `回收 ${W(-r.net)}元`, 'good'); renderPanel(true); renderTop(); return; }
+      consistModal(); return; }
+    const b = e.target.closest('[data-m]'); if (!b) return; const k = b.dataset.m;
+    if (k === 'close'){ closeModal(); }
+    if (k === 'new'){ const name = ($('#coInput') && $('#coInput').value.trim()) || '华夏铁道实业'; const tut = $('#tutChk') ? $('#tutChk').checked : false; G.newGame(name); afterLoad(); closeModal(); setSpeed(0); showPolicyQueue(); if (window.Tutorial) { if (tut) Tutorial.start(); else Tutorial.stop(false); } }
+    if (k === 'tut'){ closeModal(); setSpeed(0); if (window.Tutorial) Tutorial.start(); }
+    if (k === 'continue'){ if (G.load('auto')) { afterLoad(); closeModal(); setSpeed(0); } else toast('无法继续', G.lastLoadErr || '自动存档无法读取', 'bad'); }
+    if (k === 'load') saveModal(true);
+    if (k === 'sv'){ const sl = b.dataset.slot; if (G.hasSave(sl) && ui.confirm !== 'sv'+sl){ ui.confirm = 'sv'+sl; saveModal(false); return; } ui.confirm = null;
+      try { G.save(sl); toast('已存档', SLOTNAME(sl) + ' 保存成功。', 'good'); } catch(err) { toast('存档失败', '浏览器存储空间不足，可以删除旧存档或导出到文件。', 'bad'); } saveModal(false); }
+    if (k === 'ld'){ const sl = b.dataset.slot; if (G.load(sl)) { afterLoad(); closeModal(); setSpeed(0); toast('读档成功', '已读取' + SLOTNAME(sl) + '。', 'good'); showPolicyQueue(); } else toast('无法读取', G.lastLoadErr || '存档已损坏。', 'bad'); }
+    if (k === 'delsv'){ const sl = b.dataset.slot; if (ui.confirm === 'del'+sl){ G.deleteSave(sl); ui.confirm = null; } else ui.confirm = 'del'+sl; saveModal(ui.saveFromStart); }
+    if (k === 'exp') exportFile();
+    if (k === 'imp') $('#impFile').click();
+    if (k === 'resume'){ closeModal(); setSpeed(ui.lastSpeed || 1); showPolicyQueue(); }
+    if (k === 'tostart') startScreen();
+    const go = () => { closeModal(); setSpeed(ui.lastSpeed || 1); renderPanel(true); renderTop(); showPolicyQueue(); };
+    if (k === 'frBid'){ const r = G.frBid(+b.dataset.id, +b.dataset.v); if (!r.ok) { toast('无法投标', r.msg, 'bad'); return; } toast(+b.dataset.v ? '已报价' : '已撤回', '可在「项目」页随时调整。', 'good'); go(); }
+    if (k === 'toMarket' || k === 'toFleet'){ ui.tab = k === 'toMarket' ? 'market' : 'fleet'; if (k === 'toMarket') { ui.mf.cat = 'loco'; ui.mf.show = 'sale'; } renderTabs(); closeModal(); setSpeed(0); renderPanel(true); showPolicyQueue(); }
+    if (k === 'toProj'){ ui.tab = 'projects'; renderTabs(); closeModal(); setSpeed(0); renderPanel(true); showPolicyQueue(); }
+    if (k === 'govAcc'){ G.govAccept(+b.dataset.id); toast('接受任务', '可在「合同」页查看进度。', 'good'); go(); }
+    if (k === 'govDec'){ G.govDecline(+b.dataset.id); go(); }
+    if (k === 'war'){ G.warRespond(b.dataset.id, b.dataset.v); go(); }
+    if (k === 'intel'){ ui.selEdge = +b.dataset.e; ui.selCity = null; ui.tab = 'build'; renderTabs(); renderInspector(); closeModal(); setSpeed(0); renderPanel(true); if (window.innerWidth <= 760) setSheet(1); showPolicyQueue(); }
+    if (k === 'dilute'){ const r = G.defendDilute(); if (!r.ok) { toast('无法增发', r.msg, 'bad'); return; } toast('定向增发完成', '同业持股比例已被摊薄。', 'good'); go(); }
+    if (k === 'greenmail'){ const r = G.defendGreenmail(b.dataset.id); if (!r.ok) { toast('无法回购', r.msg, 'bad'); return; } toast('回购完成', '对方持股已全部注销。', 'good'); go(); }
+    if (k === 'toRivals'){ ui.tab = 'rivals'; renderTabs(); closeModal(); setSpeed(0); renderPanel(true); showPolicyQueue(); }
+    if (k === 'scn'){ const name = ($('#coInput') && $('#coInput').value.trim()) || '华夏铁道实业'; $('#modalBox').innerHTML = '<h1>正在推演历史……</h1><p class="muted">时间快进到剧本开始的年份，请稍候。</p>';
+      setTimeout(() => { G.startScenario(b.dataset.id, name); afterLoad(); closeModal(); setSpeed(0); showPolicyQueue(); if (window.Tutorial) Tutorial.stop(false); }, 30); }
+    if (k === 'board') boardModal();
+    if (k === 'back') startScreen();
+  });
+  let popupQueue = [];
+  function showPolicyQueue(){
+    if (ui.modalOpen || !popupQueue.length) return;
+    const p = popupQueue.shift();
+    snd(({ franch:'chime', franchWin:'coin', superDone:'horn', ovWin:'coin', ovDone:'horn', policy:'chime', event:'alert', report:'chime', war:'alert', raid:'alert', taken:'alert', over:'alert', intel:'chime', gov:'chime', accident:'alert', ipo:'coin', acq:'coin', ach:'coin', rd:'coin', scnWin:'coin', govEnd:'tick', newModels:'horn' })[p.type] || 'tick');
+    if (p.type === 'policy'){
+      setSpeed(0);
+      modal(`<div class="stamp">${p.p.y}年${p.p.m}月 · ${p.p.tag}</div><h1>${p.p.title}</h1><p>${p.p.text}</p><ul>${p.p.effects.map(x => `<li>${x}</li>`).join('')}</ul><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">知道了，继续经营</button></div>`);
+    } else if (p.type === 'report'){ setSpeed(0); modal(reportHTML(p.rep) + `<div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn primary" data-m="resume">继续经营</button></div>`, true); }
+    else if (p.type === 'event'){ setSpeed(0); modal(`<div class="stamp">${p.ev.from[0]}年${p.ev.from[1]}月 · 时事</div><h1>${p.ev.title}</h1><p>${p.ev.text}</p><p class="dim">受影响区段的列车将暂停运行，请考虑临时绕行。预计 ${p.ev.to[0]}年${p.ev.to[1]}月 后恢复。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">知道了</button></div>`); }
+    else if (p.type === 'scnStart'){ setSpeed(0); modal(`<div class="stamp">剧本 · ${p.sc.year}</div><h1>${p.sc.title}</h1><p>${p.sc.brief}</p><p><b>目标：</b>${p.sc.goal}<br><b>期限：</b>${p.sc.until} 年底<br><b>启动资金：</b>${W(p.sc.cash)}元</p><p class="dim">进度显示在「总览」页顶部。提前完成可以拿到更高的分数。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">开始</button></div>`); }
+    else if (p.type === 'scnWin'){ setSpeed(0); modal(`<div class="stamp">剧本完成</div><h1>${p.sc.title} · 目标达成</h1><p>得分 <b class="gold" style="font-size:22px">${p.score}</b>，已记入排行榜。你可以继续经营，也可以挑战其他剧本。</p><div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" data-m="board">查看排行榜</button><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'scnLose'){ setSpeed(0); modal(`<div class="stamp">剧本期限已到</div><h1>${p.sc.title}</h1><p>期限内完成了 ${Math.round(p.p*100)}% 的目标，没有上榜。你可以继续自由经营，或者回到开始界面再试一次。</p><div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" data-m="tostart">重新开始</button><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'rd'){ setSpeed(0); modal(`<div class="stamp">科研成果</div><h1>${esc(p.name)} 完成</h1><p>${p.kind === 'loc' ? `${esc(p.model)} 已实现国产化：今后采购免关税、不占进口额度，价格降低 20%。` : `本公司自主研发的「${esc(p.model)}」研制成功，现在可以在「购车」页采购。`}</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">太好了</button></div>`); }
+    else if (p.type === 'accident'){ setSpeed(0); modal(`<div class="stamp">事故通报</div><h1>${esc(p.name)} 发生行车事故</h1><p>事故发生在 ${esc(p.route)}，所幸无人员伤亡。直接损失 <b>${W(p.cost)}元</b>，该车停运 45 天，线路满意度和公司商誉都受到影响。</p><p class="dim">信号落后（半自动闭塞）、车辆长期不大修、线路超负荷运行都会增加事故风险。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">知道了</button></div>`); }
+    else if (p.type === 'ipo'){ setSpeed(0); modal(`<div class="stamp">敲钟上市</div><h1>${esc(G.S.company)} 挂牌上市</h1><p>发行价 <b>${p.price.toFixed(2)}</b> 元，募集资金 <b>${W(p.raise)}元</b>。从今天起，股价会随公司业绩、商誉和大盘情绪波动，每年年报时按所选分红率派发红利。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'acq'){ setSpeed(0); modal(`<div class="stamp">兼并重组</div><h1>收购 ${esc(p.name)}</h1><p>以 <b>${W(p.price)}元</b> 完成收购，接收自有线路 <b>${p.km.toLocaleString()} km</b>。原同业线路即日起归本公司所有，可升级改造并向国铁过轨列车收费。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'ach'){ toast('🏆 成就达成：' + p.a.name, p.a.desc, 'good'); showPolicyQueue(); }
+    else if (p.type === 'war'){ setSpeed(0); modal(`<div class="stamp">商战 · 价格战</div><h1>${esc(p.name)} 发起价格战</h1><p>${esc(p.name)} 在其线路沿线大幅降价，与你争夺 ${p.cities.slice(0,6).map(esc).join('、')}${p.cities.length>6?' 等':''} 之间的旅客，预计持续 8 个月。</p>
+      <dl class="kv"><dt>保持票价</dt><dd>重叠城市间约 <b class="neg">28%</b> 的客源被抢走，收入不受降价影响</dd><dt>跟进降价</dt><dd>重叠城市之间的站对票价 <b>−15%</b>，客源基本保住；对方亏损加快，可能提前退出，你还能赢得商誉</dd></dl>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn" data-m="war" data-id="${p.rid}" data-v="hold">保持票价</button><button class="btn primary" data-m="war" data-id="${p.rid}" data-v="match">跟进降价</button></div>`); }
+    else if (p.type === 'intel'){ const e = G.edges[p.e]; setSpeed(0); modal(`<div class="stamp">商业情报</div><h1>${esc(p.name)} 准备修建 ${C[e.a].name}—${C[e.b].name}</h1><p>据可靠消息，${esc(p.name)} 已完成 ${C[e.a].name}—${C[e.b].name}（${e.dist} km，${G.TRACK_CLASSES[p.cls].name}）的勘测，约三个月后开工。这条走廊与你的运营线路有关。</p><p class="dim">在对方开工前抢先动工，这条走廊就归你；对方建成后，你的列车经过此段需要付过轨费。</p>
+      <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" data-m="resume">静观其变</button><button class="btn primary" data-m="intel" data-e="${p.e}">查看走廊，考虑抢建</button></div>`); }
+    else if (p.type === 'raid'){ const S = G.S, ctl = G.controlPct(), pc = G.raidPct(p.rid), dq = G.diluteQuote(), gq = G.greenmailQuote(p.rid); setSpeed(0); modal(`<div class="stamp">举牌警报</div><h1>${esc(p.name)} 持股达 ${(pc*100).toFixed(1)}%</h1><p>${esc(p.name)} 在二级市场持续买入本公司股票。一旦其持股超过你方控制的 <b>${(ctl*100).toFixed(1)}%</b>，公司控制权将易手，本局结束。</p>
+      <dl class="kv"><dt>定向增发 12%</dt><dd>${dq && dq.wait <= 0 ? `募集约 ${W(dq.raise)}元，新股由友好投资者持有并参与分红；股价 −6%，商誉 −1` : `两年内只能增发一次（还需 ${dq ? Math.ceil(dq.wait/30) : '—'} 个月）`}</dd><dt>溢价回购</dt><dd>${gq ? `以 ${W(gq.cost)}元买回对方全部持股并注销；商誉 −2${S.cash < gq.cost ? '（现金不足）' : ''}` : '—'}</dd><dt>其他办法</dt><dd>提高分红、做好业绩推高股价，股价高于内在价值 20% 时对方会停止买入；也可以直接收购对方</dd></dl>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn" data-m="resume">暂不处理</button><button class="btn" data-m="toRivals">去同业页</button><button class="btn" data-m="greenmail" data-id="${p.rid}" ${gq && S.cash >= gq.cost ? '' : 'disabled'}>溢价回购</button><button class="btn primary" data-m="dilute" ${dq && dq.wait <= 0 ? '' : 'disabled'}>定向增发</button></div>`); }
+    else if (p.type === 'taken'){ setSpeed(0); modal(`<h1>控制权易手</h1><p>${esc(p.name)} 的持股已超过你方，召开临时股东大会改组了董事会。${esc(G.S.company)} 并入 ${esc(p.name)}，你的经营到此结束。</p><p class="dim">上市后要留意同业举牌：保持股价不被低估、适时定向增发或溢价回购，都能守住控制权。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="tostart">重新开始</button></div>`); }
+    else if (p.type === 'gov'){ const g = (G.S.gov||[]).find(x => x.id === p.id); if (!g || g.st !== 'offer') { showPolicyQueue(); return; } setSpeed(0); modal(`<div class="stamp">政府任务 · ${G.GOV[g.k].name}</div>${govCard(g, true)}`); }
+    else if (p.type === 'govEnd'){ const g = (G.S.gov||[]).find(x => x.id === p.id); if (g) toast(g.st === 'done' ? '任务完成：' + g.title : g.st === 'part' ? '任务基本完成：' + g.title : '任务未完成：' + g.title, g.st === 'done' ? `奖励 ${W(g.cash)}元，商誉 +${G.GOV[g.k].rep}` : g.st === 'part' ? `完成 ${Math.round(g.prog/g.target*100)}%，部分奖励 ${W(g.paid||0)}元` : `完成 ${Math.round(g.prog/g.target*100)}%，商誉 −${G.GOV[g.k].fail}`, g.st === 'fail' ? 'bad' : 'good'); showPolicyQueue(); }
+    else if (p.type === 'franch'){ const f = (G.S.franch||[]).find(x => x.uid === p.uid); if (!f || f.st !== 'bid') { showPolicyQueue(); return; } setSpeed(0); modal(`<div class="stamp">招标公告 · 干线经营权</div>${frCard(f, true)}<div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn" data-m="resume">暂不投标</button></div>`); }
+    else if (p.type === 'franchWin'){ const f = (G.S.franch||[]).find(x => x.uid === p.uid); setSpeed(0); modal(`<div class="stamp">中标通知</div><h1>${f ? esc(f.name) : '干线经营权'} 中标</h1><p>${f ? `本公司以每年 <b>${W(f.fee)}元</b> 中标，${G.FR_YEARS} 年内独家经营 ${C[f.a].name}—${C[f.b].name} 干线客运。沿线城市之间的客源份额提高 25%，本公司旅客列车在该干线上的国铁过轨费减半。<br><br>履约要求：每月在干线上开行不少于 <b>${f.minTrips}</b> 趟旅客列车（中标后有 6 个月准备期），连续 3 次不达标将被收回经营权。` : ''}</p><div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" data-m="toProj">查看项目</button><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'franchLose'){ toast('未能中标', `${p.name} 拿下了干线经营权。`, 'bad'); showPolicyQueue(); }
+    else if (p.type === 'newModels'){ setSpeed(0); const T = G.trainById, mini = id => { const m = T[id]; return `<div class="nm"><span class="thumb">${art(id)}</span><div><b>${m.name}</b> <span class="dim">${m.country} · ${useName[m.use]}</span><br><span class="dim" style="font-size:11px">${m.vmax} km/h · ${m.use==='pax' ? m.cap + ' 人' : m.cap.toLocaleString() + ' t'} · ${W(G.trainPrice(m).total)}</span></div></div>`; };
+      modal(`<div class="stamp">${p.y} 年 · 车辆市场</div><h1>${p.nw.length ? '新车上市' : '车型换代'}</h1>${p.nw.length ? `<p>今年有 ${p.nw.length} 款新车型开始接受订购。</p><div class="nmgrid">${p.nw.map(mini).join('')}</div>` : ''}
+        ${p.ended.length ? `<p style="margin-top:10px"><b>停止生产：</b>${p.ended.map(id => T[id].name).join('、')}。已有车辆照常运营，但在干线上票价略降、维修费略涨，转卖价格也会走低。</p>` : ''}
+        ${p.obs.length ? `<p><b>列为淘汰车型：</b>${p.obs.map(id => T[id].name).join('、')}。在干线上旅客不愿乘坐、配件也难找，建议调到支线运营或出售。</p>` : ''}
+        <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">${p.ended.length || p.obs.length ? '<button class="btn" data-m="toFleet">查看车队</button>' : ''}${p.nw.length ? '<button class="btn" data-m="toMarket">去购车</button>' : ''}<button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'superDone'){ const sp = G.SUPER.find(x => x.id === p.id); const e = E[sp.e]; setSpeed(0); modal(`<div class="stamp">超级工程 · 全线贯通</div><h1>${sp.name} 建成通车</h1><p>历时多年，${sp.name}全线贯通。${C[e.a].name}—${C[e.b].name}（${e.dist} km，${sp.v} km/h）正式并入本公司路网，现在可以规划经过这里的运营线路。公司商誉 +8。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'ovWin'){ const o = G.OVERSEAS.find(x => x.id === p.id); setSpeed(0); modal(`<div class="stamp">海外中标</div><h1>${o.name} 中标</h1><p>${o.desc}本公司方案在国际竞标中胜出，即日起按月投入建设资金，建成后获得 20 年运营权。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'ovLose'){ const o = G.OVERSEAS.find(x => x.id === p.id); toast('海外落标', `${o.name}：业主国选择了其他方案。`, 'bad'); showPolicyQueue(); }
+    else if (p.type === 'ovDone'){ const o = G.OVERSEAS.find(x => x.id === p.id); setSpeed(0); modal(`<div class="stamp">海外项目通车</div><h1>${o.name} 建成通车</h1><p>中国标准的铁路在海外建成运营。今后 20 年，项目运营收益将按月计入公司营收。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'over'){ setSpeed(0); modal(`<h1>公司破产清算</h1><p>连续三个月资不抵债且无法获得新的银行贷款，${esc(G.S.company)} 进入破产清算程序。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="tostart">重新开始</button></div>`); }
+    else if (p.type === 'end'){ setSpeed(0); const S = G.S; modal(`<h1>2020 · 三十五年回望</h1><p>${esc(S.company)} 从 1985 年的一纸试点许可出发，最终点亮 ${Object.keys(S.litEver).length} 座城市，累计运送旅客 ${(S.lifetime.pax/1e8).toFixed(2)} 亿人次、货物 ${(S.lifetime.tons/1e8).toFixed(2)} 亿吨，净资产 ${W(G.netWorth())}元。</p><p>${p.score ? `自由经营得分 <b class="gold">${p.score}</b>，已记入排行榜。` : ''}你可以继续经营下去。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+  }
+  function startScreen(){
+    setSpeed(0);
+    const hero = art('DF4B');
+    modal(`<h1>铁道春秋 · 1985</h1><div class="muted">一部改革年代的铁路经营模拟</div>
+      <div class="hero">${hero}</div>
+      <p>1985 年，“运力紧张”是全国铁路的头号难题：车站里挤满了买不到票的旅客，煤炭在坑口堆积如山。为此，国家出台《铁路经营权开放试点暂行办法》，允许社会资本组建铁路公司——修线、买车、开行列车，或者向国铁租用线路过轨运营。</p>
+      <p class="dim" style="font-size:12px">本作以中国铁路发展史为背景：大提速、入世、路网规划、政企分开等是真实历史节点；公司、试点制度、人物及各项数值效果均为虚构设定。</p>
+      <p>你将经营一家首批试点企业，从三十多年的改革浪潮中一路走来：价格闯关、大提速、入世、高铁时代……点亮全国 ${C.length} 座城市，打造属于你的铁路帝国。</p>
+      <div class="row" style="margin:14px 0"><label class="muted">公司名称</label><input id="coInput" value="华夏铁道实业" maxlength="12" style="flex:1"></div>
+      <label class="row" style="gap:6px;margin:-6px 0 12px;font-size:13px"><input type="checkbox" id="tutChk" ${window.Tutorial && Tutorial.seen() ? '' : 'checked'}> 开启新手引导（自由经营，约 10 分钟）</label>
+      <div class="row" style="justify-content:flex-end;gap:8px">
+        ${G.hasSave('auto') ? '<button class="btn" data-m="continue">继续上次（自动存档）</button>' : ''}
+        ${G.listSaves().some(x => x.has && x.slot !== 'auto') ? '<button class="btn" data-m="load">读取存档</button>' : '<button class="btn" data-m="load">导入存档</button>'}
+        <button class="btn" data-m="board">排行榜</button>
+        <button class="btn primary" data-m="new">自由经营（1985 年起）</button></div>
+      <h3 style="margin-top:14px">剧本挑战</h3>
+      <div class="scn-list">${G.SCENARIOS.map(sc => `<div class="card" style="margin-bottom:6px"><div class="row sb"><b>${sc.title}</b><span class="tag">${sc.year}–${sc.until}</span></div><div style="font-size:12px;margin:4px 0">${sc.brief}</div><div class="row sb"><span class="dim" style="font-size:12px">目标：${sc.goal} · 启动资金 ${W(sc.cash)}元</span><button class="btn sm primary" data-m="scn" data-id="${sc.id}">开始</button></div></div>`).join('')}</div>
+      <p class="dim" style="font-size:11px;margin-top:14px">本作故事、政策与公司均为虚构。车型性能参考历史资料，价格与成本按游戏需要设定。</p>`, true);
+  }
+  function boardModal(){
+    const B = G.board(); const groups = {}; B.forEach(e => (groups[e.title] = groups[e.title] || []).push(e));
+    modal(`<h1>排行榜</h1><p class="muted">记录保存在本机浏览器中。剧本按达成目标时的剩余年限、净资产、商誉和点亮城市计分；自由经营在 2021 年 1 月结算。</p>
+      ${Object.keys(groups).length ? Object.entries(groups).map(([t, L]) => `<h3>${esc(t)}</h3><table class="t"><tr><th>#</th><th>公司</th><th class="r">得分</th><th class="r">达成年份</th><th class="r">净资产</th><th class="r">日期</th></tr>${L.slice(0,10).map((e,i) => `<tr><td class="num">${i+1}</td><td>${esc(e.company)}</td><td class="num r gold">${e.score}</td><td class="num r">${e.y}</td><td class="num r">${W(e.worth)}</td><td class="num r dim">${e.date}</td></tr>`).join('')}</table>`).join('') : '<div class="dim">还没有记录。完成一个剧本或者经营到 2020 年底就能上榜。</div>'}
+      <div class="row" style="justify-content:flex-end;margin-top:10px">${G.S ? '<button class="btn" data-m="close">关闭</button>' : ''}<button class="btn" data-m="back">返回开始界面</button></div>`, true); }
+  function scnBox(){ const S = G.S; const sc = G.scenario(); if (!sc) return ''; const p = G.scnProgress(); const y = G.ym(S.day).y;
+    return `<div class="card" style="margin-bottom:10px;border-color:var(--gold)"><div class="row sb"><b>剧本 · ${sc.title}</b><span class="tag ${S.scn.done ? 'green' : S.scn.failed ? 'red' : 'gold'}">${S.scn.done ? `${S.scn.done} 年完成` : S.scn.failed ? '已超期' : `剩 ${Math.max(0, sc.until - y + 1)} 年`}</span></div>
+      <div style="font-size:12px;margin:4px 0">目标：${sc.goal}（${sc.until} 年底前）</div><div class="region"><span>完成度</span><div class="bar g"><i style="width:${p*100}%"></i></div><span class="num r">${Math.round(p*100)}%</span></div></div>`; }
+  function help(){
+    setSpeed(0);
+    modal(`<h1>经营手册</h1>
+      <h3>基本循环</h3><ul>
+      <li><b>新建运营线路</b>：「线路」页 → 新建，在地图上点起点和终点，系统自动寻路；方框小城市需先开站才停靠。任何已建成的轨道（国铁、同业、自有）都可以使用。</li>
+      <li><b>购车并分配</b>：「购车」页选车型，选择线路后购买。国产车约 30 天交付，进口车约 75 天并受关税与年度额度限制。</li>
+      <li><b>收入</b>：客流按城市人口、距离、年代增长计算，与国铁同线竞争——你的列车越快，分流越多；国铁未连通的城市对几乎由你独享。货运需求取决于煤炭、钢铁、港口等货运指数。票额按长途优先分配。</li>
+      <li><b>成本</b>：运行成本（燃料/电力/乘务）、过轨费（国铁基准 × 线路等级）、车辆维护、线路养护与利息。</li></ul>
+      <h3>修建线路</h3><ul>
+      <li>点击地图上的走廊（实线为已建线路，虚线为可修建的走廊），在「建设」页选择等级与电气化后开工。</li>
+      <li>自有线路：自己的列车免过轨费；国铁与同业列车会过轨并向你付费（可在「财务」调整费率）。</li>
+      <li>抢先修建国铁历史上即将修建的线路（如大秦、京九、青藏），国铁会取消计划，转而租用你的线路。</li>
+      <li>电力机车与动车组需要电气化线路；青藏线格尔木以南需高原型机车（NJ2）。摆式列车在普速/快速线上可提速 20%。</li></ul>
+      <h3>列车等级与机务段</h3><ul>
+      <li>「线路」页可为每条客运线路选择直达、特快、普快或夜行卧铺。直达只停起讫两站，特快只停大城市；夜行卧铺适合 6–16 小时的行程，需要在编组里多挂硬卧、软卧。</li>
+      <li>在大城市修建机务段（城市详情或「车队」页），半径范围内的本公司列车就近检修：可用率更高、维修费更低、大修停运更短。每座机务段有检修容量。</li></ul>
+      <h3>车型换代</h3><ul><li>每年 1 月都会有新车型上市，到 2020 年前后可以买到复兴号。车型停产后仍可运营；停产超过 8 年列为淘汰车型。</li><li>旧型车在干线上票价打折、维修费上涨，但在<b>支线</b>（起讫有二三线城市，或全程 200 km 以内）上没有影响，维修还更省。旧车也可以出售，或者卖给前来求购的同业。</li></ul>
+      <h3>重大项目</h3><ul><li>1998 年起可竞标国铁干线客运经营权，中标后独家经营若干年，需履行开行承诺。</li><li>后期可以投资跨海大桥、海底隧道、川藏铁路等超级工程，或到海外投标修建高铁，获取长期收益。</li></ul>
+      <h3>操作</h3><ul><li>拖拽平移、滚轮缩放地图；空格暂停；1–4 切换速度；Esc 取消。</li><li>手机上单指拖动地图、双指缩放，轻点城市或走廊查看详情；面板顶部的「▲ 面板 / ▼ 地图」可切换地图与面板的大小。</li><li>每月自动存档。「存档」里有 5 个存档位，还可以把进度导出成文件、在别的设备上导入。</li></ul>
+      <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" data-m="tut">重新播放新手引导</button><button class="btn primary" data-m="resume">回到游戏</button></div>`, true);
+  }
+  function soundModal(){ setSpeed(0); const c = window.Sfx ? Sfx.cfg : { sfx:false, music:false, sv:0, mv:0 };
+    modal(`<h1>设置</h1><h2>声音设置</h2><div class="muted" style="margin-bottom:10px">音效和配乐都是实时合成的：内燃机车风笛、车站广播提示音，以及一段五声音阶的慢板配乐。</div>
+      <div class="sndrow"><label class="row" style="gap:8px"><input type="checkbox" data-snd="sfx" ${c.sfx?'checked':''}> <b>音效</b></label><input type="range" min="0" max="100" value="${Math.round(c.sv*100)}" data-snd="sv"></div>
+      <div class="sndrow"><label class="row" style="gap:8px"><input type="checkbox" data-snd="music" ${c.music?'checked':''}> <b>背景音乐</b></label><input type="range" min="0" max="100" value="${Math.round(c.mv*100)}" data-snd="mv"></div>
+      <div class="row" style="gap:6px;margin:10px 0;flex-wrap:wrap"><span class="muted">试听</span><button class="btn sm" data-sndtry="horn">风笛</button><button class="btn sm" data-sndtry="chime">车站提示音</button><button class="btn sm" data-sndtry="coin">进账</button><button class="btn sm" data-sndtry="build">开工</button></div>
+      <section class="card settings-about" aria-labelledby="settings-about-title">
+        <h2 id="settings-about-title">关于</h2>
+        <p>制作人：大老师</p>
+        <p>微信：lynchrrr</p>
+        <p>更多游戏：闲鱼 / 小红书 搜索「模拟游戏大全」</p>
+      </section>
+      <div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">回到游戏</button></div>`); }
+  $('#modal').addEventListener('input', e => { const k = e.target.dataset.snd; if (!k || !window.Sfx) return; Sfx.set(k, e.target.type === 'checkbox' ? e.target.checked : e.target.value / 100); });
+  $('#modal').addEventListener('change', e => { const k = e.target.dataset.snd; if (!k || !window.Sfx) return; Sfx.set(k, e.target.type === 'checkbox' ? e.target.checked : e.target.value / 100); });
+  $('#modal').addEventListener('click', e => { const b = e.target.closest('[data-sndtry]'); if (b && window.Sfx) { Sfx.set('sfx', true); Sfx.play(b.dataset.sndtry); } });
+  $('#bSound').onclick = soundModal;
+  $('#bHelp').onclick = help;
+  // —— 存档管理 ——
+  const SLOTNAME = k => k === 'auto' ? '自动存档' : '存档位 ' + (k === 'manual' ? 1 : +k.slice(1));
+  function saveModal(fromStart){
+    if (!fromStart) setSpeed(0); ui.saveFromStart = !!fromStart;
+    const list = G.listSaves(), fmtAt = t => { const d = new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+    modal(`<h1>存档管理</h1><div class="muted" style="margin-bottom:8px">存档保存在本机浏览器里。换设备或清理浏览器前，可以把进度导出成文件备份。</div>
+      <div class="slots">${list.map(x => { const m = x.meta;
+        return `<div class="slot ${x.has ? '' : 'empty'}"><div class="sl-name"><b>${SLOTNAME(x.slot)}</b>${x.slot==='auto' ? '<span class="dim">每月自动保存</span>' : ''}</div>
+          <div class="sl-info">${x.has ? (m ? `<b>${esc(m.company)}</b> · ${m.date}${m.scn ? ' · ' + esc(m.scn) : ''}<br><span class="dim">净资产 ${W(m.worth)} · 点亮 ${m.lit} 城 · 保存于 ${fmtAt(m.at)}</span>` : '<span class="dim">旧版存档</span>') : '<span class="dim">空</span>'}</div>
+          <div class="sl-btns">${!fromStart && x.slot !== 'auto' ? `<button class="btn sm ${x.has?'':'primary'}" data-m="sv" data-slot="${x.slot}">${x.has ? (ui.confirm==='sv'+x.slot ? '确认覆盖' : '覆盖') : '保存'}</button>` : ''}${x.has ? `<button class="btn sm primary" data-m="ld" data-slot="${x.slot}">读取</button>` : ''}${x.has && x.slot !== 'auto' ? `<button class="btn sm danger" data-m="delsv" data-slot="${x.slot}">${ui.confirm==='del'+x.slot ? '确认删除' : '删除'}</button>` : ''}</div></div>`; }).join('')}</div>
+      <div class="row" style="justify-content:space-between;margin-top:12px;gap:8px;flex-wrap:wrap"><span class="row" style="gap:6px">${fromStart ? '' : '<button class="btn" data-m="exp">导出当前进度</button>'}<button class="btn" data-m="imp">从文件导入</button></span>
+      <button class="btn primary" data-m="${fromStart ? 'back' : 'resume'}">${fromStart ? '返回' : '回到游戏'}</button></div>`, true);
+  }
+  function exportFile(){ const t = G.ym(G.S.day); const blob = new Blob([G.exportSave()], { type:'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `tdcq-save-${t.y}-${String(t.m).padStart(2,"0")}.json`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    toast('已导出', '存档文件已下载。以后可在「存档」里导入。', 'good'); }
+  $('#impFile').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const rd = new FileReader(); rd.onload = () => { const r = G.importSave(rd.result); if (!r.ok) { toast('无法导入', r.msg, 'bad'); return; }
+      afterLoad(); closeModal(); setSpeed(0); toast('导入成功', `已读取 ${G.S.company} 的进度。`, 'good'); showPolicyQueue(); };
+    rd.onerror = () => toast('无法导入', '读取文件失败：' + ((rd.error && rd.error.message) || '未知错误'), 'bad'); rd.readAsText(f); });
+  $('#bSave').onclick = () => saveModal(false);
+  $('#bLoad').onclick = () => saveModal(false);
+  $('#bNew').onclick = startScreen;
+
+  function afterLoad(){ if (window.Tutorial && Tutorial.active()) Tutorial.stop(false); ui.selCity = ui.selEdge = ui.selRoute = null; ui.mode = 'view'; ui.draft = []; ui.newsTop = G.S.news[0]; ui.sig = ''; renderTabs(); renderPanel(true); renderInspector(); renderRouteBar(); renderTop(); renderTicker(); popupQueue = G.popups(); }
+  function renderTicker(){ const S = G.S; $('#tickerItems').innerHTML = S.news.slice(0,8).map(n => `<span><b>${n.date}</b> ${esc(n.title)} — ${esc(n.text)}</span>`).join(''); }
+
+  // ---------------- 主循环 ----------------
+  let last = performance.now(), tAcc = 0;
+  function loop(now){
+    requestAnimationFrame(loop);   // 先登记下一帧：即使本帧出错，主循环也不会停
+    const dt = Math.min(0.1, (now - last)/1000); last = now;
+    const S = G.S;
+    if (S && !ui.modalOpen && ui.speed > 0 && !S.over){
+      let hours = dt * SPEEDS[ui.speed] * 24;
+      try { while (hours > 0){ const h = Math.min(4, hours); G.tick(h); hours -= h; } }
+      catch(err){ console.error(err); setSpeed(0); toast('模拟出错，已暂停', String(err && err.message || err) + '。可以先存档或导出，再继续。', 'bad'); }
+    }
+    if (S){
+      const ps = G.popups(); if (ps.length){ popupQueue.push(...ps); showPolicyQueue(); }
+      drawMap(now);
+      tAcc += dt;
+      if (tAcc > 0.25){ tAcc = 0; renderTop(); renderPanel(false);
+        if (S.news[0] !== ui.newsTop){ const fresh = []; for (const n of S.news){ if (n === ui.newsTop) break; fresh.push(n); } ui.newsTop = S.news[0];
+          fresh.slice(0,3).forEach(n => { if (['good','bad','warn','state','rival'].includes(n.kind) && !n.title.startsWith('成就')) toast(n.title, n.text, n.kind==='bad'||n.kind==='warn' ? 'bad' : n.kind==='good' ? 'good' : ''); });
+          renderTicker(); if (ui.selCity !== null || ui.selEdge !== null) renderInspector(); }
+      }
+    }
+  }
+
+  // 启动
+  resize(); fit();
+  G.newGame('华夏铁道实业');
+  renderTools(); renderTabs(); afterLoad();
+  startScreen();
+  requestAnimationFrame(loop);
+  window.__ui = ui; window.__cityXY = i => [sx(C[i].lon), sy(C[i].lat)];
+})();

@@ -1,0 +1,14 @@
+{
+  "name": "铁道春秋 · 1985",
+  "short_name": "铁道春秋",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#e9dfc8",
+  "theme_color": "#2f4f3a",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

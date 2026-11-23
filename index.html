@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#2f4f3a">
+<title>铁道春秋 · 1985</title>
+<link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/png" href="icon-192.png" sizes="192x192">
+<link rel="icon" type="image/png" href="icon-512.png" sizes="512x512">
+<link rel="apple-touch-icon" href="apple-touch-icon.png" sizes="180x180">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/theme-ticket.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand">
+    <div class="logo"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M5 3h14a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3l2 3h-2.5l-2-3h-7l-2 3H4l2-3a3 3 0 0 1-3-3V5a2 2 0 0 1 2-2zm1 3v5h5V6H6zm7 0v5h5V6h-5zM7 13.2a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6zm10 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6z" fill="#1d1405"/></svg></div>
+    <div><b>铁道春秋</b><small id="coName">铁路经营 · 1985</small></div>
+  </div>
+  <div class="datebox"><span class="d" id="date">1985-01-01</span><span class="era" id="era">改革开放 · 试点阶段</span></div>
+  <div class="speed" id="speed">
+    <button data-s="0" title="暂停 (空格)">❚❚</button>
+    <button data-s="1" title="1 天/秒">▶</button>
+    <button data-s="2" title="3 天/秒">▶▶</button>
+    <button data-s="3" title="7 天/秒">▶▶▶</button>
+    <button data-s="4" title="15 天/秒">⏩</button>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><label>现金</label><span id="kCash">—</span></div>
+    <div class="kpi"><label>负债</label><span id="kDebt">—</span></div>
+    <div class="kpi"><label>净资产</label><span id="kWorth">—</span></div>
+    <div class="kpi"><label>上月净利</label><span id="kNet">—</span></div>
+    <div class="kpi"><label>点亮城市</label><span id="kLit">—</span></div>
+  </div>
+  <div class="topbtns">
+    <button class="btn sm" id="bSave">存档</button>
+    <button class="btn sm" id="bLoad">读档</button>
+    <button class="btn sm" id="bSound">设置</button>
+    <button class="btn sm" id="bHelp">帮助</button>
+    <button class="btn sm" id="bNew">新游戏</button>
+  </div>
+  <button class="btn sm mobonly" id="bMenu" aria-label="菜单">☰</button>
+</header>
+<div id="main">
+  <section id="mapwrap">
+    <canvas id="map"></canvas>
+    <div id="maptools"></div>
+    <div id="routebar"></div>
+    <div id="legend"></div>
+    <div id="inspector"></div>
+    <div id="zoom"><button data-z="1.25">＋</button><button data-z="0.8">－</button><button data-z="0">⌂</button></div>
+    <div id="ticker"><div class="lbl">要闻</div><div class="items" id="tickerItems"></div></div>
+  </section>
+  <aside id="panel">
+    <div id="sheetbar" class="mobonly"><span class="grip"></span><button id="bSheetDn" aria-label="放大地图">▼ 地图</button><button id="bSheetUp" aria-label="展开面板">▲ 面板</button></div>
+    <nav id="tabs"></nav>
+    <div id="panelBody"></div>
+  </aside>
+</div>
+<div id="modal"><div class="box" id="modalBox"></div></div>
+<div id="toast"></div>
+<input type="file" id="impFile" accept=".json,application/json" hidden>
+<script src="js/data.js"></script>
+<script src="js/cars.js"></script>
+<script src="js/towns.js"></script>
+<script src="js/cargo.js"></script>
+<script src="js/art.js"></script>
+<script src="js/game.js"></script>
+<script src="js/hexmap.js"></script>
+<script src="js/sound.js"></script>
+<script src="js/tutorial.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
