@@ -571,3 +571,29 @@ table.t.fin-table :is(th,td).r{width:29%}
   #coach .ct-foot{gap:8px}
   #toast .toast{max-inline-size:100%}
 }
+
+/* ---- 新建线路操作栏：长线路时按钮始终可见（长线确认修复） ---- */
+#routebar{left:50%;right:auto;transform:translateX(-50%);width:min(720px,calc(100% - 24px));max-width:none;max-inline-size:none;max-height:none;overflow:visible;z-index:6}
+#routebar.show{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px 12px}
+.routebar-content{min-inline-size:0;display:grid;grid-template-columns:minmax(0,1fr);gap:4px}
+.rb-head{display:flex;align-items:center;gap:8px;min-inline-size:0}
+.rb-head .num{white-space:nowrap}
+.rb-head .rb-toggle{margin-inline-start:auto}
+.rb-stops{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;overscroll-behavior:contain;scrollbar-width:thin;padding-bottom:2px;min-inline-size:0}
+.rb-stops>*{flex:none}
+.rb-stops .muted{white-space:normal;flex:1 1 auto}
+#routebar.open .rb-stops{flex-wrap:wrap;overflow-x:hidden;overflow-y:auto;max-height:min(40vh,260px)}
+.routebar-actions{display:grid;grid-template-columns:repeat(3,minmax(0,auto));gap:6px;align-self:center}
+@media (max-width:900px){
+  #routebar{left:8px;right:8px;transform:none;width:auto}
+}
+@media (max-width:760px){
+  #routebar.show{grid-template-columns:minmax(0,1fr)}
+  .routebar-actions{grid-template-columns:repeat(3,minmax(0,1fr));width:100%}
+  #routebar.open .rb-stops{max-height:min(30dvh,180px)}
+}
+@media (max-width:480px){
+  #routebar{top:54px;max-height:none;overflow:visible;padding:6px 8px}
+  .rb-head .rb-toggle{min-height:36px;min-width:0}
+  #routebar.open .rb-stops{max-height:min(22dvh,140px)}
+}

@@ -426,14 +426,19 @@
     if (ui.mode !== 'route'){ b.classList.remove('show'); return; }
     if (ui.sheet && ui.sheet() === 2) ui.setSheet(1);
     let dist = 0; for (let k = 0; k < ui.draft.length-1; k++) dist += G.edgeByPair[ui.draft[k]+'-'+ui.draft[k+1]].dist;
-    b.innerHTML = `<div class="routebar-content"><b class="gold">新建运营线路</b>
-      <div class="stops">${ui.draft.length ? (() => { const st = G.stopFlags({ stops:ui.draft }); return ui.draft.map((c,k) => (k?`<span class="arr">${icon('next')}</span>`:'') + `<span class="s${st[k]?'':' pass'}" title="${st[k]?'停靠':'未开站，列车通过不停'}">${C[c].name}</span>`).join(''); })() : '<span class="muted">点击起点城市，再点击下一座目的城市（可跨越多站，自动沿已建轨道寻路）</span>'}</div>
-      ${ui.draft.length > 1 ? `<span class="num muted">${dist}&nbsp;km</span>` : ''}</div>
+    const n = ui.draft.length, long = n > 6, open = !!(long && ui.rbOpen);
+    b.classList.toggle('open', open);
+    b.innerHTML = `<div class="routebar-content"><div class="rb-head"><b class="gold">新建运营线路</b>
+      ${n > 1 ? `<span class="num muted">${n}&nbsp;站 · ${dist}&nbsp;km</span>` : ''}
+      ${long ? `<button class="btn sm rb-toggle" data-rb="toggle" aria-expanded="${open}">${open ? '收起' : '展开全部'}</button>` : ''}</div>
+      <div class="stops rb-stops">${n ? (() => { const st = G.stopFlags({ stops:ui.draft }); return ui.draft.map((c,k) => (k?`<span class="arr">${icon('next')}</span>`:'') + `<span class="s${st[k]?'':' pass'}" title="${st[k]?'停靠':'未开站，列车通过不停'}">${C[c].name}</span>`).join(''); })() : '<span class="muted">点击起点城市，再点击下一座目的城市（可跨越多站，自动沿已建轨道寻路）</span>'}</div></div>
       <div class="routebar-actions"><button class="btn sm" data-rb="undo">撤销</button><button class="btn sm" data-rb="cancel">取消</button>
-      <button class="btn sm primary" data-rb="ok" ${ui.draft.length < 2 ? 'disabled' : ''}>完成</button></div>`;
+      <button class="btn sm primary" data-rb="ok" ${n < 2 ? 'disabled' : ''}>完成</button></div>`;
     b.classList.add('show');
+    { const sv = b.querySelector('.rb-stops'); if (sv){ if (open) sv.scrollTop = sv.scrollHeight; else sv.scrollLeft = sv.scrollWidth; } }
     b.querySelectorAll('[data-rb]').forEach(x => x.onclick = () => {
       const k = x.dataset.rb;
+      if (k === 'toggle'){ ui.rbOpen = !ui.rbOpen; renderRouteBar(); }
       if (k === 'undo'){ ui.draft.pop(); renderRouteBar(); }
       if (k === 'cancel') cancelRoute();
       if (k === 'ok'){ const r = G.createRoute(ui.draft); ui.selRoute = r.id; cancelRoute(); ui.tab = 'routes'; renderTabs(); renderPanel(true); toast('线路已创建', `${r.name}。现在可以为它购买或分配列车。`, 'good'); snd('horn'); }
