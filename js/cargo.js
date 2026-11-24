@@ -18,6 +18,7 @@ const CAR_CARGO = {
   P62:['general','grain'], C62A:['coal','ore'], C64:['coal','ore'], G60:['oil'], N17:['steel'],
   C70:['coal','ore','steel'], C80:['coal'], X1K:['cont'], US_HOPPER:['coal','grain'], US_STACK:['cont'],
   P64:['general','grain'], P70:['general','grain'], G70:['oil'], KM70:['coal','grain'], X2K:['cont'], NX70:['steel','cont'],
+  C82:['coal','ore','steel'], KM82:['coal','grain'], P82:['general','grain'], G82:['oil'], X4K:['cont'], NX82:['steel','cont'],
 };
 
 // 特定城市的产业（万吨/月 量级的指数）

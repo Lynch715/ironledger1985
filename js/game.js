@@ -7,8 +7,10 @@ const Game = (() => {
   const HOURS_PER_MONTH = 720, AVAIL = 0.9;
 
   // ---------- 静态数据 ----------
+  // 城市按序号存档：原有 62 座大城市 → 二三线城市 → 边疆与海外扩展（frontier.js），新城市只能追加在末尾
   const cities = CITY_RAW.map(c => Object.assign(c.slice(), { tier:1 })).concat(TOWN_RAW.map(c => Object.assign(c.slice(), { tier: c[3] >= 30 ? 2 : 3 })))
-    .map((c, i) => ({ i, name:c[0], lon:c[1], lat:c[2], pop0:c[3], g:c[4], F0:c[5], region:c[6], tag:c[7], tier:c.tier }));
+    .concat((typeof FRONTIER_RAW !== 'undefined' ? FRONTIER_RAW : []).map(c => Object.assign(c.slice(), { tier: c[8] || 3, abroad: c[9] || '' })))
+    .map((c, i) => ({ i, name:c[0], lon:c[1], lat:c[2], pop0:c[3], g:c[4], F0:c[5], region:c[6], tag:c[7], tier:c.tier, abroad:c.abroad || '' }));
   const isTown = ci => cities[ci].tier > 1;
   const cityIdx = {}; cities.forEach(c => cityIdx[c.name] = c.i);
   function hav(a, b){ const R=6371, toR=Math.PI/180; const dLat=(b.lat-a.lat)*toR, dLon=(b.lon-a.lon)*toR;
@@ -38,7 +40,18 @@ const Game = (() => {
   SUPER.forEach(sp => { const a = cityIdx[sp.a], b = cityIdx[sp.b]; if (a === undefined || b === undefined) return;
     const ed = { i:edges.length, a, b, terrain:sp.terrain, line:'', v0:0, elec0:0, plateau:!!sp.plateau, dist:Math.round(hav(cities[a], cities[b]) * sp.k), west:(cities[a].lon < 110 && cities[b].lon < 110), grp:-1, sup:sp.id };
     edges.push(ed); sp.e = ed.i; });
-  const edgeByPair = {}; edges.forEach(e => { edgeByPair[e.a+'-'+e.b] = e; edgeByPair[e.b+'-'+e.a] = e; });
+  // 边疆与海外走廊（追加在超级工程之后，保持旧存档的走廊序号不变）
+  const BASE_EDGES = edges.length;
+  (typeof FRONTIER_EDGES !== 'undefined' ? FRONTIER_EDGES : []).forEach(e => {
+    const a = cityIdx[e[0]], b = cityIdx[e[1]]; if (a === undefined || b === undefined) { console.error('frontier edge city missing', e); return; }
+    const A = cities[a], B = cities[b], gi = groups.length;
+    const d = hav(A, B) * (1.16 + Math.max(0, e[2]-1)*0.06);
+    const abroad = !!(A.abroad && B.abroad), xb = !!A.abroad !== !!B.abroad;
+    const fc = xb ? (A.abroad || B.abroad) : '';
+    const ed = { i:edges.length, a, b, terrain:e[2], line:e[3], v0:e[4], elec0:e[5], plateau:!!e[6], dist:Math.max(8, Math.round(d)),
+      west: !abroad && !xb && A.lon < 110 && B.lon < 110, grp:gi, pol:e[7] || '', abroad, xb, gauge: xb && BROAD_GAUGE.includes(fc), country: abroad ? A.abroad : fc };
+    edges.push(ed); groups.push({ i:gi, a, b, line:e[3], edges:[ed.i], dist:ed.dist, abroad: abroad || xb });
+  });  const edgeByPair = {}; edges.forEach(e => { edgeByPair[e.a+'-'+e.b] = e; edgeByPair[e.b+'-'+e.a] = e; });
   const adj = cities.map(() => []); edges.forEach(e => { adj[e.a].push(e); adj[e.b].push(e); });
   const trainById = {}; TRAINS.forEach(t => trainById[t.id] = t);
   const carById = {}; CARS.forEach(c => carById[c.id] = c);
@@ -133,7 +146,7 @@ const Game = (() => {
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   function cargoSD(c, y){
     const p = popOf(c, y), gr = fgrow(c, y), tag = c.tag || '', f = c.F0 || 0, n = c.name;
-    const ce = Math.pow(clamp((y - 1988) / 12, 0, 3), 1.4), port = /港口|特区/.test(tag);
+    const ce = Math.pow(clamp((y - 1988) / 12, 0, 3), 1.4), port = /港口|特区|陆港/.test(tag);
     const S0 = {}, D0 = {};
     S0.coal = (/煤/.test(tag) && tag !== '煤港') ? f * gr : 0;
     D0.coal = p / 40 + (/钢/.test(tag) ? 8 * gr : 0) + (tag === '煤港' ? 35 * gr : /港口/.test(tag) ? 8 * gr : 0);
@@ -160,16 +173,17 @@ const Game = (() => {
       if (ev.block) edges.forEach(e => { const inb = c => c.lon >= ev.block.lon[0] && c.lon <= ev.block.lon[1] && c.lat >= ev.block.lat[0] && c.lat <= ev.block.lat[1]; if (inb(cities[e.a]) || inb(cities[e.b])) blocked[e.i] = ev.title; }); });
     return { pax, fr, city, evs };
   }
-  function clsOfV(v){ return v <= 120 ? 0 : v <= 160 ? 1 : v <= 250 ? 2 : 3; }
-  function clsFeeMul(v){ return [1, 1.3, 1.7, 2.2][clsOfV(v)]; }
+  function clsOfV(v){ return v <= 120 ? 0 : v <= 160 ? 1 : v <= 250 ? 2 : v <= 350 ? 3 : 4; }
+  function clsFeeMul(v){ return [1, 1.3, 1.7, 2.2, 2.6][clsOfV(v)]; }
   const fmtW = yuan => { let w = yuan/10000; const a = Math.abs(w); if (a < 0.05) w = 0;
     if (a >= 10000) return (w/10000).toFixed(2) + ' 亿'; if (a >= 100) return Math.round(w).toLocaleString('zh-CN') + ' 万'; return w.toFixed(1) + ' 万'; };
 
   let S = null; // 游戏状态
 
   function newGame(company){
+    registerDesigns(null);
     S = {
-      v: 2, company: company || '华夏铁道实业', day: 0, cash: 1.5e8, debt: 0,
+      v: 2, mapVer: 2, company: company || '华夏铁道实业', day: 0, cash: 1.5e8, debt: 0,
       mods: { fare:1, tariff:0.6, importQuota:2, westSubsidy:0, buildSubsidy:0, hsrSubsidy:0, credit:1, paxDemand:1, freightDemand:1, stateFee:1, rivalAggro:1 },
       unlock: { P1:true }, policies: [], stateEvents: [], tracks: [], routes: [], trains: [],
       rivals: RIVALS.map(r => ({ id:r.id, cash: 8e7, active: r.from <= 1985, built: 0, value: 0 })),
@@ -240,8 +254,12 @@ const Game = (() => {
     if (track.owner === 'P') return base * S.feeMul;
     return base * 1.15 * (warOf(track.owner) ? 1.4 : 1);
   }
+  // 跨境与境外走廊：对应的开放政策出台前，本公司不能修建，也不能开行列车
+  function edgeLock(e){ if (!e || !e.pol || (S && S.unlock && S.unlock[e.pol])) return null; return policyById[e.pol] || { title:'对外开放政策', y:'', m:'' }; }
+  function lockText(e){ const p = edgeLock(e); return p ? `${e.xb ? '口岸' : '境外线路'}尚未对本公司开放（需政策 ${p.title}${p.y ? `，${p.y} 年` : ''}）` : ''; }
   function trackUsable(tr, model, e){
     if (tr.status !== 'ok') return false;
+    if (e.pol && edgeLock(e)) return false;
     if (blocked[e.i]) return false;
     if ((model.type === 'electric' || model.type === 'emu') && !tr.elec) return false;
     if (e.plateau && !model.plateau && model.type !== 'electric' && model.type !== 'emu') return false;
@@ -315,7 +333,7 @@ const Game = (() => {
     for (let it = 0; it < n; it++){
       let u = -1, best = Infinity; for (let i = 0; i < n; i++) if (!done[i] && dist[i] < best){ best = dist[i]; u = i; }
       if (u < 0 || u === b) break; done[u] = true;
-      adj[u].forEach(e => { if (!ok[e.i]) return; const v = e.a === u ? e.b : e.a; if (avoid && avoid.includes(v) && v !== b) return;
+      adj[u].forEach(e => { if (!ok[e.i] || edgeLock(e)) return; const v = e.a === u ? e.b : e.a; if (avoid && avoid.includes(v) && v !== b) return;
         if (dist[u] + e.dist < dist[v]){ dist[v] = dist[u] + e.dist; prev[v] = u; } });
     }
     if (!isFinite(dist[b])) return null;
@@ -342,11 +360,12 @@ const Game = (() => {
         if (any && (model.type==='electric'||model.type==='emu')) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} 未电气化`;
         if (any && model.use === 'freight' && S.tracks.some(x => x.e === e.i && x.status === 'ok' && x.v >= 250) && !S.tracks.some(x => x.e === e.i && x.status === 'ok' && x.v < 250)) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} 只有高速客运专线，不开行货车`;
         if (any && e.plateau && !model.plateau) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} 为高原线路，需高原型机车`;
+        if (edgeLock(e)) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} ${lockText(e)}`;
         return { ok:false, why };
       }
       const v = effVmax(model, tr);
       const vavg = v * (v > 200 ? 0.82 : 0.72) * (e.terrain > 1.8 ? 0.85 : 1) * (model.use==='freight' ? 0.8 : 1);
-      const h = e.dist / vavg;
+      const h = e.dist / vavg + (e.xb ? (e.gauge ? 4 : 1.5) : 0);   // 口岸通关；宽轨国家还要换轮
       const f = tr.owner === 'P' ? 0 : feeRate(tr, model.use, y, v) * e.dist * (tr.owner === 'S' && model.use === 'pax' ? frFee(e.i) : 1);
       legs.push({ e:e.i, tr:tr.id, owner:tr.owner, from:r.stops[k], to:r.stops[k+1], dist:e.dist, h, fee:f, v });
       dist += e.dist; hours += h; fee += f; vmin = Math.min(vmin, v);
@@ -362,20 +381,21 @@ const Game = (() => {
   }
 
   // 国铁最短时间（Dijkstra，按国铁线路）
-  let stateTime = null;
+  // 国铁最短时间：按需逐行计算（城市较多时避免每次全量计算）
+  let stateTime = null, sAdj = null;
   function computeStateTimes(){
-    const n = cities.length; stateTime = [];
-    const sAdj = cities.map(() => []);
-    S.tracks.forEach(tr => { if (tr.owner==='S' && tr.status==='ok') { const e = edges[tr.e]; const h = e.dist / (Math.min(tr.v, 350) * 0.55) ; sAdj[e.a].push([e.b,h,e.dist]); sAdj[e.b].push([e.a,h,e.dist]); } });
-    for (let s = 0; s < n; s++) {
-      const dist = new Array(n).fill(Infinity); dist[s] = 0; const done = new Array(n).fill(false);
-      for (let it = 0; it < n; it++) {
-        let u = -1, best = Infinity; for (let i = 0; i < n; i++) if (!done[i] && dist[i] < best) { best = dist[i]; u = i; }
-        if (u < 0) break; done[u] = true;
-        sAdj[u].forEach(([v,h]) => { if (dist[u] + h + 0.3 < dist[v]) dist[v] = dist[u] + h + 0.3; });
-      }
-      stateTime.push(dist);
+    sAdj = cities.map(() => []); stateTime = [];
+    S.tracks.forEach(tr => { if (tr.owner==='S' && tr.status==='ok') { const e = edges[tr.e]; if (e.pol && edgeLock(e)) return; const h = e.dist / (Math.min(tr.v, 350) * 0.55) + (e.xb ? (e.gauge ? 4 : 1.5) : 0); sAdj[e.a].push([e.b,h,e.dist]); sAdj[e.b].push([e.a,h,e.dist]); } });
+  }
+  function stateRow(s){
+    if (stateTime[s]) return stateTime[s];
+    const n = cities.length, dist = new Array(n).fill(Infinity); dist[s] = 0; const done = new Uint8Array(n);
+    for (let it = 0; it < n; it++) {
+      let u = -1, best = Infinity; for (let i = 0; i < n; i++) if (!done[i] && dist[i] < best) { best = dist[i]; u = i; }
+      if (u < 0) break; done[u] = 1;
+      sAdj[u].forEach(([v,h]) => { if (dist[u] + h + 0.3 < dist[v]) dist[v] = dist[u] + h + 0.3; });
     }
+    return (stateTime[s] = dist);
   }
 
   // 需求模型
@@ -383,7 +403,9 @@ const Game = (() => {
     const pi = popOf(cities[ci], y), pj = popOf(cities[cj], y);
     const era = 1 + (y - 1985) * 0.065;
     const induce = 1 + Math.max(0, vavg - 70) / 160;
-    return 70 * pi * pj / Math.pow(Math.max(d, 60), 0.85) * era * S.mods.paxDemand * induce;
+    const A = cities[ci].abroad, B = cities[cj].abroad;
+    const visa = A && B ? (A === B ? 0.8 : 0.5) : (A || B) ? (y < 2005 ? 0.35 : 0.5) : 1;   // 跨境客流受签证限制
+    return 70 * pi * pj / Math.pow(Math.max(d, 60), 0.85) * era * S.mods.paxDemand * induce * visa;
   }
   function freightDemand(ci, cj, d, y){
     const era = 1 + (y - 1985) * 0.07;
@@ -392,10 +414,11 @@ const Game = (() => {
   function cargoDemand(SD, g, ci, cj, d, y){
     const era = 1 + (y - 1985) * 0.05;
     const a = SD[ci], b = SD[cj];
-    return 5200 * CARGO[g].k * (a.S[g] * b.D[g] + b.S[g] * a.D[g]) / Math.sqrt(Math.max(d, 60)) * era * S.mods.freightDemand;
+    const xb = !!cities[ci].abroad !== !!cities[cj].abroad ? (S.mods.xbFreight || 1) : 1;
+    return 5200 * CARGO[g].k * (a.S[g] * b.D[g] + b.S[g] * a.D[g]) / Math.sqrt(Math.max(d, 60)) * era * S.mods.freightDemand * xb;
   }
   function captureShare(ci, cj, hoursPlayer, use, y){
-    const ts = stateTime ? stateTime[ci][cj] : Infinity;
+    const ts = stateTime ? stateRow(ci)[cj] : Infinity;
     if (!isFinite(ts)) return use==='freight' ? 0.9 : 0.85;
     const ratio = hoursPlayer / ts;
     let s = 1 / (1 + Math.pow(ratio, 2.2));
@@ -629,7 +652,7 @@ const Game = (() => {
     const feeIn = trackFeeIncome(y);
     S.month.maint = maint + (S.month.ovhCost||0); S.month.trackMaint = tm; S.month.interest = interest; S.month.feeIn = feeIn;
     S.cash += feeIn - maint - tm - interest;
-    ensureT4(); ensureT5(); ensureT6(); depotsMonth(y); usedMonth(y, pm); supersMonth(y); franchMonth(y); overseasMonth(y); rivalsMonth(y); warsMonth(y); raidMonth(y); govMonth();
+    ensureT4(); ensureT5(); ensureT6(); depotsMonth(y); usedMonth(y, pm); usedMarketMonth(y); supersMonth(y); franchMonth(y); overseasMonth(y); rivalsMonth(y); warsMonth(y); raidMonth(y); govMonth();
     cityGrowth(y);
     const m = S.month;
     const rev = m.pax + m.freight + m.feeIn + (m.contract||0) + (m.biz||0) + (m.rent||0) + (m.subsidy||0) + (m.overseas||0);
@@ -748,7 +771,7 @@ const Game = (() => {
         // 选择候选走廊
         const nodes = new Set([cityIdx[def.home]]); own.forEach(x => { nodes.add(edges[x.e].a); nodes.add(edges[x.e].b); });
         const cands = [];
-        nodes.forEach(n => adj[n].forEach(e => { if (e.sup) return;
+        nodes.forEach(n => adj[n].forEach(e => { if (e.sup || e.abroad || e.xb) return;
           if (S.tracks.some(x => x.e===e.i && x.owner===r.id)) return;
           const g = popOf(cities[e.a], y) * popOf(cities[e.b], y) / e.dist;
           const hasP = S.tracks.some(x => x.e===e.i && x.owner==='P');
@@ -805,6 +828,119 @@ const Game = (() => {
     const obs = TRAINS.filter(m => m.end + 8 === y - 1 && ownIds.has(m.id)).map(m => m.id);
     if (nw.length) log('新车上市', `${y} 年新车型上市：${nw.map(id => trainById[id].name).join('、')}。可在「购车」页查看。`, 'info');
     if (nw.length || ended.length || obs.length) pendingPopups.push({ type:'newModels', y, nw, ended, obs }); }
+  // —— 换代保证：同级别接班车型 ——
+  function succClass(m){ const tr = (m.type === 'steam' || m.type === 'diesel') ? 'd' : m.type === 'electric' ? 'e' : 'u';
+    if (tr === 'u') return 'emu-' + (m.vmax <= 200 ? 'L' : m.vmax < 300 ? 'M' : 'H'); return m.use + '-' + tr; }
+  const CLASS_NAME = { 'pax-d':'客运内燃/氢能机车', 'freight-d':'货运内燃/氢能机车', 'pax-e':'客运电力机车', 'freight-e':'货运电力机车', 'emu-L':'城际动车组（≤200 km/h）', 'emu-M':'250 级动车组', 'emu-H':'300 级以上高速动车组' };
+  const FAR_END = 2090;   // end ≥ 2090 视为“长期在产”
+  function buyable(m){ return !m.research || !!(S && S.rd && S.rd.done && S.rd.done[m.research]); }
+  function endingSoon(m, y){ y = y || ym(S.day).y; return m.end < FAR_END && y >= m.year && y <= m.end && m.end - y <= 2; }
+  function succScore(m){ return m.use === 'freight' ? m.cap * 10 + m.vmax : m.vmax * 10 + m.cap / 100; }
+  // 推荐替代车型：同级别、比它晚停产；优先当前在售、国产（或已国产化）、性能最好的
+  function successorOf(m, y){ y = y || ym(S.day).y; const c = succClass(m);
+    const c1 = TRAINS.filter(x => x !== m && buyable(x) && succClass(x) === c && x.end > m.end && x.year <= Math.max(y, m.end) + 1);
+    if (!c1.length) return null;
+    const now = c1.filter(x => x.year <= y && y <= x.end); const pool = now.length ? now : c1;
+    pool.sort((a, b) => ((isImp(a) ? 1 : 0) - (isImp(b) ? 1 : 0)) || (succScore(b) - succScore(a)) || (a.year - b.year));
+    return pool[0]; }
+  function nextTrainName(model){
+    S.serial = S.serial || {}; const id = model.id, pre = `${model.en.split(' ').pop()}-`;
+    const used = S.trains.filter(t => t.model === id).map(t => { const m = String(t.name || '').startsWith(pre) ? /^(\d+)$/.exec(String(t.name).slice(pre.length)) : null; return m ? +m[1] : 0; });
+    const n = (S.serial[id] = Math.max(S.serial[id] || 0, S.trains.filter(t => t.model===id).length, ...used) + 1);   // 同型编号单调递增，卖车后不重号
+    return pre + String(n).padStart(3, '0'); }
+
+  // —— 二手车市场：从国铁和同业购买旧车（停产车型也能买到） ——
+  const USED_MAX = 6;
+  function usedPool(y){ return TRAINS.filter(m => !m.research && !m.design && y >= m.year + 3 && y <= m.end + 15); }
+  function priceAt(p, year, y){ return p * 1e4 * (cpi(y) / cpi(Math.max(1985, year))); }
+  function consistAt(m, yy){ if (isUnit(m)) return [];
+    const kind = m.use; const ok = c => c.kind === kind && yy >= c.year && yy <= c.end && !c.imported;
+    let av = CARS.filter(c => ok(c) && (kind === 'freight' ? /件杂货|煤炭/.test(c.cargo) : /^YZ/.test(c.id))); if (!av.length) av = CARS.filter(ok);
+    av.sort((a, b) => b.year - a.year); const c = av[0]; if (!c) return [];
+    const per = c.tare + (kind === 'pax' ? c.seats * 0.08 : c.load);
+    return [{ id:c.id, n:Math.max(1, Math.min(kind === 'pax' ? 16 : 50, Math.floor(trailLimit(m) / per))) }]; }
+  function sellerName(s){ if (s === 'S') return '国家铁路'; const d = RIVALS.find(r => r.id === s); return d ? d.name : '同业公司'; }
+  function usedMarketMonth(y){ S.usedMarket = (S.usedMarket || []).filter(o => o.expire > S.day && trainById[o.model]);
+    const pool = usedPool(y); if (!pool.length) return;
+    let add = S.usedMarket.length < 2 ? 2 : (Math.random() < 0.5 ? 1 : 0);
+    while (add-- > 0 && S.usedMarket.length < USED_MAX){
+      const w = pool.map(m => { const e = modelEra(m, y); return (e === 'ended' ? 2.4 : e === 'obsolete' ? 1.4 : 1) * (successorOf(m, y) && available(successorOf(m, y)) ? 1 : 1.6); });
+      let r = Math.random() * w.reduce((a, b) => a + b, 0), k = 0; while (k < pool.length - 1 && (r -= w[k]) > 0) k++;
+      const m = pool[k]; if (S.usedMarket.some(o => o.model === m.id)) continue;
+      const maxAge = Math.max(3, Math.min(28, y - m.year)); const age = 3 + Math.floor(Math.random() * (maxAge - 2));
+      const so = Math.round(Math.random() * Math.min(age, 5) * 10) / 10;
+      const sellers = ['S'].concat(S.rivals.filter(x => x.active && !x.acquired).map(x => x.id)); const seller = sellers[Math.floor(Math.random() * sellers.length)];
+      const cars = consistAt(m, Math.min(y, m.end));
+      const newP = priceAt(m.price, m.year, y) + cars.reduce((a, x) => { const c = carById[x.id]; return a + priceAt(c.price, c.year, y) * x.n; }, 0);
+      const k2 = { new:0.95, active:0.9, ended:0.8, obsolete:0.65 }[modelEra(m, y)];
+      const price = Math.max(1e4, Math.round(newP * Math.pow(0.93, age) * k2 * (1 - 0.03 * so) * (0.85 + Math.random() * 0.25) / 1e4) * 1e4);
+      S.usedMarket.push({ id:S.nid++, model:m.id, age, so, seller, cars, price, newP, expire:S.day + 90 });
+    } }
+  function buyUsed(id, routeId){ const o = (S.usedMarket || []).find(x => x.id === id); if (!o) return { ok:false, msg:'该车已被别家买走' };
+    if (o.expire <= S.day) { S.usedMarket = S.usedMarket.filter(x => x !== o); return { ok:false, msg:'挂牌已过期' }; }
+    const m = trainById[o.model]; if (!m) return { ok:false, msg:'车型数据缺失' };
+    if (S.cash < o.price) return { ok:false, msg:'现金不足' };
+    S.cash -= o.price; S.month.buy += o.price;
+    if (o.seller !== 'S') { const r = S.rivals.find(x => x.id === o.seller); if (r) r.cash += o.price; }
+    const t = { id:S.nid++, model:m.id, name:nextTrainName(m), route:routeId || null, status:'delivery', arrive:S.day + 15, bought:S.day - o.age * 365, ovh:S.day - o.so * 365,
+      price:o.price / Math.pow(0.93, o.age), year:ym(S.day).y, phase:0, dir:0, cars:(o.cars || []).filter(x => carById[x.id]).map(x => ({ id:x.id, n:x.n })), used:true };
+    S.trains.push(t); S.usedMarket = S.usedMarket.filter(x => x !== o);
+    log('购入二手车', `从${sellerName(o.seller)}购入 ${m.name}（车龄 ${o.age} 年），${fmtW(o.price)}元，约 15 天后交付。`, 'info');
+    recompute(); return { ok:true, train:t }; }
+
+  // —— 自主设计：用研发点打造本公司车型 ——
+  const PLATFORMS = [
+    { id:'pe', name:'客运电力机车平台', cls:'pax-e', type:'electric', use:'pax', img:'OWN_PE', pts:700, vcap:220, code:'K' },
+    { id:'fe', name:'重载电力机车平台', cls:'freight-e', type:'electric', use:'freight', img:'OWN_FE', pts:800, vcap:160, code:'H' },
+    { id:'pd', name:'客运内燃/氢能机车平台', cls:'pax-d', type:'diesel', use:'pax', img:'OWN_PD', pts:600, vcap:200, code:'N' },
+    { id:'fd', name:'货运内燃/氢能机车平台', cls:'freight-d', type:'diesel', use:'freight', img:'OWN_FD', pts:700, vcap:140, code:'NH' },
+    { id:'el', name:'城际动车组平台', cls:'emu-L', type:'emu', use:'pax', img:'OWN_EL', pts:1200, vcap:200, code:'C' },
+    { id:'eh', name:'高速动车组平台', cls:'emu-H', type:'emu', use:'pax', img:'OWN_EH', pts:2400, vcap:400, code:'G' },
+  ];
+  const DESIGN_MAX = 12;
+  function designUnlock(){ const y = ym(S.day).y, rd = rdState(); if (y >= 2015) return ''; if (OWN_MODELS.some(o => rd.done[o.id])) return y >= 2005 ? '' : '2005 年起开放自主设计';
+    return '完成任一款自主车型研制（或到 2015 年）后解锁'; }
+  function designBase(p){ const y = ym(S.day).y;
+    const all = TRAINS.filter(m => succClass(m) === p.cls && m.type !== 'steam' && buyable(m) && m.year <= y); if (!all.length) return null;
+    const now = all.filter(m => y <= m.end); const pool = now.length ? now : all;
+    return pool.slice().sort((a, b) => ((isImp(a) ? 1 : 0) - (isImp(b) ? 1 : 0)) || (succScore(b) - succScore(a)))[0]; }   // 优先国产（含已国产化）车型
+  function designQuote(pid, o){ const p = PLATFORMS.find(x => x.id === pid); if (!p) return null; const base = designBase(p); if (!base) return null;
+    o = o || {}; const sp = clamp(o.sp | 0, 0, 2), cp = clamp(o.cap | 0, 0, 2), ec = clamp(o.eco | 0, 0, 2), T = sp + cp + ec; const y = ym(S.day).y;
+    const vmax = Math.max(base.vmax, Math.min(p.vcap, Math.round(base.vmax * (1 + 0.1 * sp) / 10) * 10));
+    const cap = p.use === 'freight' || isUnit(base) ? Math.round(base.cap * (1 + 0.1 * cp)) : Math.round(base.cap * (1 + 0.1 * cp));
+    const power = Math.round(base.power * (1 + 0.08 * sp + (p.use === 'pax' && !isUnit(base) ? 0.1 : 0.05) * cp) / 10) * 10;
+    const run = Math.round(base.run * (1 - 0.1 * ec) * 10) / 10;
+    const price = Math.round(base.price * (cpi(y) / cpi(Math.max(1985, base.year))) * (1 + 0.05 * T) * 0.92);
+    const pts = Math.round(p.pts * (1 + 0.45 * T) * (y >= 2030 ? 1.25 : 1));
+    return { p, base, sp, cp, ec, T, vmax, cap, power, run, price, pts, spMax: base.vmax >= p.vcap };
+  }
+  function designName(p){ const pool = { pe:['驰风','逐日','长风'], fe:['重骥','泰岳','砥柱'], pd:['神骏','追云','远驰'], fd:['犇牛','擎岳','巨犀'], el:['飞燕','星河','晨曦'], eh:['飞鸿','苍穹','长虹'] }[p.id] || ['新星'];
+    const n = (rdState().designs || []).filter(d => d.platform === p.id).length; return '华夏·' + pool[n % pool.length] + (n >= pool.length ? Math.floor(n / pool.length) + 1 : ''); }
+  function createDesign(pid, o, name){ const rd = rdState(); const why = designUnlock(); if (why) return { ok:false, msg:why };
+    const q = designQuote(pid, o); if (!q) return { ok:false, msg:'该平台暂时没有可参考的车型' };
+    rd.designs = rd.designs || []; if (rd.designs.length >= DESIGN_MAX) return { ok:false, msg:`最多保留 ${DESIGN_MAX} 款自主设计` };
+    if (rd.designs.filter(d => !rd.done[d.research]).length >= 3) return { ok:false, msg:'同时最多 3 个设计方案在研' };
+    const y = ym(S.day).y; const p = q.p, base = q.base;
+    name = String(name || '').replace(/[<>&"'`]/g, '').trim().slice(0, 14) || designName(p);
+    const n = rd.dzN = (rd.dzN || 0) + 1; const key = 'dz_' + n, id = 'DZ' + n;
+    let en = `HX-${p.code}${p.use === 'freight' ? Math.round(q.cap / 1000) : q.vmax}`; if (TRAINS.some(m => m.en === en)) en += '-' + n;
+    const art = Object.assign({}, base.art || {}, { num:en });
+    const d = { id, name, en, country:'中国', flag:'CN', maker:S.company + '（自主设计）', year:y, end:2099, type:p.type, use:p.use, design:true, research:key, platform:p.id, img:p.img,
+      vmax:q.vmax, power:q.power, cap:q.cap, price:q.price, run:q.run, weight:base.weight || '—', axle:base.axle || '—', rdPts:q.pts, baseId:base.id, spec:{ sp:q.sp, cap:q.cp, eco:q.ec },
+      note:`本公司在「${base.name}」基础上自主设计的${p.name.replace('平台', '')}${q.T ? `（${[q.sp ? '提速 ' + q.sp * 10 + '%' : '', q.cp ? (p.use === 'freight' ? '牵引' : '载客') + ' +' + q.cp * 10 + '%' : '', q.ec ? '能耗 −' + q.ec * 10 + '%' : ''].filter(Boolean).join('，')}）` : ''}。`, art };
+    if (base.comfort || isUnit(base)) d.comfort = Math.round(((base.comfort || (base.year >= 1995 ? 1.3 : 1.15)) + 0.05 * q.cp) * 100) / 100;
+    if (base.tilt) d.tilt = true; if (base.plateau) d.plateau = true; if (base.fuel) d.fuel = base.fuel;
+    rd.designs.push(d); registerDesigns(S);
+    if (!rd.cur) startProject(key);
+    log('自主设计立项', `「${name}」（${en}）设计方案立项，需要 ${q.pts} 研发点。`, 'info');
+    return { ok:true, model:d }; }
+  function cancelDesign(key){ const rd = rdState(); const d = (rd.designs || []).find(x => x.research === key); if (!d || rd.done[key]) return { ok:false, msg:'无法撤销' };
+    rd.designs = rd.designs.filter(x => x !== d); if (rd.cur === key) { rd.cur = null; rd.pts = 0; } if (rd.prog) delete rd.prog[key]; registerDesigns(S); return { ok:true }; }
+  // 把存档里的自主设计登记进车型目录（读档、新局、回滚时调用）
+  function registerDesigns(st){
+    for (let i = TRAINS.length - 1; i >= 0; i--) if (TRAINS[i].design) { delete trainById[TRAINS[i].id]; TRAINS.splice(i, 1); }
+    const ds = st && st.rd && Array.isArray(st.rd.designs) ? st.rd.designs : [];
+    ds.forEach(d => { if (d && typeof d.id === 'string' && /^DZ\d+$/.test(d.id) && !trainById[d.id] && fin(d.vmax) && fin(d.price) && fin(d.cap) && fin(d.power) && fin(d.run)) { d.design = true; TRAINS.push(d); trainById[d.id] = d; } }); }
   function overseasValue(){ return (S.overseas || []).reduce((a, x) => a + (x.st === 'build' ? x.paid : x.st === 'run' ? x.cost * Math.max(0, (x.until - S.day) / (20 * 365)) : 0), 0); }
   function netWorth(){ return S.cash - S.debt - (S.bonds||[]).reduce((a,b) => a + b.amt, 0) + assets() + overseasValue(); }
   function creditLimit(){ const y = ym(S.day).y; return ((1.0e8 * cpi(y) * S.mods.credit) + assets() * 0.45) * repMul(); }
@@ -818,6 +954,7 @@ const Game = (() => {
     if (cls >= 2) elec = true;
     let unit = C.cost + (elec ? ELEC_COST : 0);
     let sub = S.mods.buildSubsidy + (e.west ? S.mods.westSubsidy : 0) + (cls >= 2 ? S.mods.hsrSubsidy : 0);
+    if (e.abroad || e.xb) sub = (S.mods.abroadSubsidy || 0) + (e.xb ? S.mods.buildSubsidy * 0.5 : 0);   // 境外段不享受国内补贴
     sub = Math.min(0.45, sub) + jvSub(e);
     const gross = e.dist * unit * 1e4 * e.terrain * cpi(y) * (1 - 0.03 * exLv('ce'));
     return { cost: gross * (1 - sub), gross, sub, months: buildMonths(e, cls), elec, v:C.v, unit: unit*e.terrain*cpi(y)*(1-sub) };
@@ -826,6 +963,7 @@ const Game = (() => {
   function buildTrack(eid, cls, elec){
     if (edges[eid] && edges[eid].sup && !S.tracks.some(x => x.e === eid)) return { ok:false, msg:'这条通道需要以超级工程立项修建' };
     const e = edges[eid];
+    if (edgeLock(e)) return { ok:false, msg:lockText(e) };
     if (!canBuildClass(cls)) return { ok:false, msg:'该等级尚未获得政策许可' };
     if (S.tracks.some(x => x.e===eid && x.owner==='P')) return { ok:false, msg:'已拥有该走廊线路，可选择改造升级' };
     const q = buildQuote(e, cls, elec);
@@ -845,6 +983,7 @@ const Game = (() => {
     return { segs, cost, months, km, v:TRACK_CLASSES[cls].v };
   }
   function buildGroup(gi, cls, elec){
+    { const lk = groups[gi] && groups[gi].edges.map(i => edges[i]).find(edgeLock); if (lk) return { ok:false, msg:lockText(lk) }; }
     if (!canBuildClass(cls)) return { ok:false, msg:'该等级尚未获得政策许可' };
     const q = groupQuote(gi, cls, elec); if (!q.segs.length) return { ok:false, msg:'该走廊已全部建成' };
     if (S.cash < q.cost) return { ok:false, msg:'现金不足' };
@@ -894,10 +1033,7 @@ const Game = (() => {
     if (S.cash < p.total) return { ok:false, msg:'现金不足' };
     S.cash -= p.total; S.month.buy += p.total;
     if (isImp(model)) S.imports.n++;
-    S.serial = S.serial || {}; const pre = `${model.en.split(' ').pop()}-`;
-    const used = S.trains.filter(t => t.model === id).map(t => { const m = String(t.name || '').startsWith(pre) ? /^(\d+)$/.exec(String(t.name).slice(pre.length)) : null; return m ? +m[1] : 0; });
-    const n = (S.serial[id] = Math.max(S.serial[id] || 0, S.trains.filter(t => t.model===id).length, ...used) + 1);   // 同型编号单调递增，卖车后不重号
-    const t = { id:S.nid++, model:id, name: `${model.en.split(' ').pop()}-${String(n).padStart(3,'0')}`, route: routeId || null, status:'delivery',
+    const t = { id:S.nid++, model:id, name: nextTrainName(model), route: routeId || null, status:'delivery',
       arrive: S.day + (isImp(model) ? 75 : 30), bought:S.day, ovh:S.day, price:p.total, year:ym(S.day).y, phase:0, dir:0, cars:p.dc };
     S.trains.push(t);
     log('采购车辆', `订购 ${model.name}，价格 ${fmtW(p.total)}元${isImp(model)?'（含关税）':''}，预计 ${isImp(model)?'75':'30'} 天后交付。`, 'info');
@@ -935,7 +1071,7 @@ const Game = (() => {
   }
   function toggleSkip(rid, c){ const r = S.routes.find(r => r.id===rid); if (!r) return; r.skip = r.skip || []; const i = r.skip.indexOf(c); if (i >= 0) r.skip.splice(i,1); else r.skip.push(c); recompute(); }
   function deleteRoute(id){ S.trains.forEach(t => { if (t.route===id) { t.route = null; if (t.status==='run') t.status='idle'; } }); S.routes = S.routes.filter(r => r.id!==id); recompute(); }
-  function routeAllowed(a, b){ const e = edgeByPair[a+'-'+b]; if (!e) return false; return S.tracks.some(x => x.e===e.i && x.status==='ok'); }
+  function routeAllowed(a, b){ const e = edgeByPair[a+'-'+b]; if (!e || edgeLock(e)) return false; return S.tracks.some(x => x.e===e.i && x.status==='ok'); }
 
   // =========================================================
   //  第二层：运输合同 · 车辆老化与大修 · 资本运作 · 商誉
@@ -1098,16 +1234,16 @@ const Game = (() => {
     S.locals = (S.locals || []).filter(o => o.expire > S.day);
     const out = [];
     // 1) 合资建线：对方出资一部分，要求通车后开行客车
-    const cands = groups.map((g, i) => ({ g, i })).filter(({ g, i }) => !g.edges.some(ei => S.tracks.some(t => t.e === ei && t.owner === 'P')) && !S.locals.some(o => o.gi === i) && !(S.jv || []).some(o => o.gi === i));
+    const cands = groups.map((g, i) => ({ g, i })).filter(({ g, i }) => !g.abroad && !g.edges.some(ei => S.tracks.some(t => t.e === ei && t.owner === 'P')) && !S.locals.some(o => o.gi === i) && !(S.jv || []).some(o => o.gi === i));
     const pickJV = cands.filter(({ g }) => { const a = cities[g.a], b = cities[g.b]; return a.lon < 112 || b.lon < 112 || a.tier > 1 || b.tier > 1 || !g.edges.some(ei => S.tracks.some(t => t.e === ei && t.owner === 'S')); });
     if (pickJV.length && Math.random() < 0.8) { const { g, i } = pickJV[Math.floor(Math.random() * pickJV.length)];
       const host = cities[g.a].lon < cities[g.b].lon ? g.a : g.b;
       out.push({ id:S.nid++, kind:'jv', gi:i, host, sub: 0.25 + Math.round(Math.random() * 4) * 0.05, need: 20, expire:S.day + 180 }); }
     // 2) 设站补贴：小城市请你停车
-    const towns = cities.filter(c => c.tier > 1 && stationLv(c.i) < 1 && Object.values(adj[c.i] || []).some(e => S.tracks.some(t => t.e === e.i && t.status === 'ok')));
+    const towns = cities.filter(c => c.tier > 1 && !c.abroad && stationLv(c.i) < 1 && Object.values(adj[c.i] || []).some(e => S.tracks.some(t => t.e === e.i && t.status === 'ok')));
     if (towns.length) { const c = towns[Math.floor(Math.random() * towns.length)]; out.push({ id:S.nid++, kind:'station', ci:c.i, sub:0.5, expire:S.day + 180 }); }
     // 3) 公益慢车：西部或山区补贴
-    if (y >= 1990 && Math.random() < 0.6) { const c = cities.filter(c => c.lon < 112 && S.lit[c.i]); if (c.length) { const h = c[Math.floor(Math.random() * c.length)]; out.push({ id:S.nid++, kind:'slow', ci:h.i, rate: 9 + Math.round(Math.random() * 6), expire:S.day + 180 }); } }
+    if (y >= 1990 && Math.random() < 0.6) { const c = cities.filter(c => c.lon < 112 && !c.abroad && S.lit[c.i]); if (c.length) { const h = c[Math.floor(Math.random() * c.length)]; out.push({ id:S.nid++, kind:'slow', ci:h.i, rate: 9 + Math.round(Math.random() * 6), expire:S.day + 180 }); } }
     S.locals = S.locals.concat(out).slice(-6);
     if (out.length) log('地方政府', `收到 ${out.length} 份地方政府合作提议，请在「合同」页查看。`, 'info');
   }
@@ -1199,6 +1335,8 @@ const Game = (() => {
       out.push({ key, kind:'loc', name:`${m.name} 国产化`, pts: Math.round(m.price / 8), m, desc:'免关税、不占进口额度、价格降低 20%，交付期缩短为 30 天' }); });
     OWN_MODELS.forEach(o => { if (rd.done[o.id]) return; const ok = y >= o.from && (!o.need || rd.done[o.need]);
       out.push({ key:o.id, kind:'own', name:o.name, pts:o.pts, m:trainById[o.model], locked: ok ? '' : (y < o.from ? `${o.from} 年起可立项` : '需先完成上一代自主车型'), desc:'研发成功后可购买本公司自主车型' }); });
+    (rd.designs || []).forEach(d => { if (rd.done[d.research]) return;
+      out.push({ key:d.research, kind:'design', name:`自主设计：${d.name}`, pts:d.rdPts || 1000, m:d, desc:`${d.en} · ${d.vmax} km/h · ${d.use === 'pax' ? (isUnit(d) ? d.cap + ' 人' : '功率 ' + d.power.toLocaleString() + ' kW') : d.cap.toLocaleString() + ' t'} · 运行成本 ${d.run}` }); });
     return out;
   }
   function startProject(key){ const rd = rdState(); const p = rdProjects().find(x => x.key === key); if (!p) return { ok:false, msg:'项目不可用' }; if (p.locked) return { ok:false, msg:p.locked };
@@ -1211,6 +1349,7 @@ const Game = (() => {
     rd.pts += gain; rd.lastGain = gain;
     const p = rdProjects().find(x => x.key === rd.cur);
     if (p && rd.pts >= p.pts) { rd.done[p.key] = ym(S.day).y; rd.cur = null; rd.pts = 0;
+      if (p.kind === 'design') p.m.year = ym(S.day).y;   // 定型投产年份
       log('研发成功', p.kind === 'loc' ? `${p.m.name} 实现国产化：免关税、不占进口额度、价格降低 20%。` : `自主车型「${p.m.name}」研制成功，可以在购车页采购！`, 'good');
       pendingPopups.push({ type:'rd', name:p.name, kind:p.kind, model:p.m.name }); addRep(2); }
     return spend;
@@ -1248,7 +1387,7 @@ const Game = (() => {
     { id:'west', title:'西部大开发', year:2000, until:2008, cash:12e8,
       brief:'国家提出西部大开发，中西部铁路建设迎来补贴与机遇。',
       goal:'点亮东经 110° 以西的 15 座城市',
-      prog: () => Object.keys(S.lit).filter(c => cities[c].lon < 110).length / 15 },
+      prog: () => Object.keys(S.lit).filter(c => cities[c].lon < 110 && !cities[c].abroad).length / 15 },
     { id:'jingjin', title:'京津城际', year:2005, until:2009, cash:60e8,
       brief:'奥运会即将到来。请抢在国铁之前，建成北京至天津的高速城际铁路。',
       goal:'自有 250 km/h 以上线路贯通北京—天津，且两地间时速 200 公里以上列车的月客流达到 400 万人次',
@@ -1555,7 +1694,7 @@ const Game = (() => {
   // ---------- 存档 ----------
   // —— 存档：自动存档 + 5 个手动存档位（manual 即 1 号位，兼容旧存档）——
   const SLOTS = ['manual', 's2', 's3', 's4', 's5'];
-  const SAVE_VER = 5;
+  const SAVE_VER = 6;
   function saveMeta(){ const t = ym(S.day); return { company:S.company, date:`${t.y}年${t.m}月`, worth:netWorth(), lit:Object.keys(S.lit || {}).length, scn:S.scn ? (SCENARIOS.find(x => x.id === S.scn.id) || {}).title || null : null, at:Date.now() }; }
   function metas(){ try { return JSON.parse(localStorage.getItem('tdcq2_meta') || '{}'); } catch(e) { return {}; } }
   function save(slot){ slot = slot || 'manual'; S.saveVer = SAVE_VER; const str = JSON.stringify(S); localStorage.setItem('tdcq2_save_' + slot, str);
@@ -1567,7 +1706,7 @@ const Game = (() => {
   const ARR = () => [], OBJ = () => ({});
   const STATE_DEF = { lifetime:() => ({ pax:0, tons:0, rev:0, trips:0 }), imports:null, lit:OBJ, litEver:OBJ, achievements:OBJ, boost:OBJ, cityLv:OBJ, reports:ARR, evSeen:OBJ,
     offers:ARR, contracts:ARR, bonds:ARR, policies:ARR, stateEvents:ARR, unlock:OBJ, stations:OBJ, serial:OBJ, wars:ARR, gov:ARR, depots:ARR, supers:OBJ, franch:ARR, overseas:ARR,
-    locals:ARR, jv:ARR, usedOffers:ARR, cands:ARR, execs:OBJ, biz:OBJ, bizCost:OBJ, land:OBJ, stSub:OBJ, slowSub:OBJ, cityTrips:OBJ };
+    locals:ARR, jv:ARR, usedOffers:ARR, usedMarket:ARR, cands:ARR, execs:OBJ, biz:OBJ, bizCost:OBJ, land:OBJ, stSub:OBJ, slowSub:OBJ, cityTrips:OBJ };
   const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
   function validateState(st, ver){ try { return validateState0(st, ver); } catch(e) { return ['存档结构异常：' + (e && e.message || e)]; } }
   function validateState0(st, ver){
@@ -1593,7 +1732,9 @@ const Game = (() => {
     if (st.ipo !== undefined && st.ipo !== null && (!isObj(st.ipo) || ['shares','pub','price'].some(q => !fin(st.ipo[q])) || !Array.isArray(st.ipo.hist))) add('上市信息 ipo 无效');
     if (st.scn !== undefined && st.scn !== null && (!isObj(st.scn) || !SCENARIOS.some(x => x.id === st.scn.id))) add('剧本信息 scn 无效');
     if (st.rd !== undefined && st.rd !== null && (!isObj(st.rd) || !isObj(st.rd.done) || !fin(st.rd.pts))) add('研发信息 rd 无效');
+    if (st.rd && st.rd.designs !== undefined && !Array.isArray(st.rd.designs)) add('自主设计 designs 不是列表');
     if (err.length) return err;
+    registerDesigns(st);   // 自主设计车型要先登记，列车才能通过车型校验
     st.rivals.forEach((r, i) => { if (!r || !RIVALS.some(x => x.id === r.id) || !fin(r.cash)) add(`第 ${i+1} 家同业数据无效`); });
     const rv = new Set(RIVALS.map(r => r.id)), owners = new Set(['P','S', ...rv]);
     st.tracks.forEach((tr, i) => { if (!tr || !Number.isInteger(tr.e) || !edges[tr.e]) add(`第 ${i+1} 段轨道的走廊编号无效`);
@@ -1624,13 +1765,35 @@ const Game = (() => {
     if (h && st.lastYM === h.y + '-' + h.m) { const d = dateOf(st.day); st.lastYM = d.getFullYear() + '-' + (d.getMonth() + 1); }
     return st;
   }
-  function fixUp(){ ensureT2(); ensureT4(); ensureT5(); S.trains.forEach(t => { if (!t.cars) t.cars = defaultConsist(trainById[t.model]); }); recompute(); }
+  // 旧存档升级到扩展地图：补上 1985 年既有的新走廊、已经开通的国铁新线和已出台的开放政策（不弹窗）
+  function ensureFrontier(){
+    if (S.mapVer >= 2) return;
+    const t = ym(S.day), passed = o => t.y > o.y || (t.y === o.y && t.m >= o.m);
+    const newE = e => e.i >= BASE_EDGES;
+    edges.forEach(e => { if (newE(e) && e.line && !S.tracks.some(x => x.e === e.i && x.owner === 'S'))
+      S.tracks.push({ id:S.nid++, e:e.i, owner:'S', v:e.v0, elec:!!e.elec0, status:'ok', line:e.line, cost:0, built:0 }); });
+    const pols = [];
+    POLICIES.forEach(p => { if (!/^X/.test(p.id) || S.policies.includes(p.id) || !passed(p)) return; S.policies.push(p.id); p.apply(S); S.unlock[p.id] = true; pols.push(p.title); });
+    // 旧国铁提速、电气化事件对新走廊同样生效（如陇海线东延连云港段）
+    STATE_EVENTS.forEach((ev, k) => { if (k >= STATE_EVENTS_BASE || !S.stateEvents.includes(k)) return;
+      if (ev.kind === 'speed') S.tracks.forEach(tr => { if (tr.owner === 'S' && newE(edges[tr.e]) && ev.lines.some(l => (tr.line||'').startsWith(l)) && tr.v < ev.v && tr.v <= 200) tr.v = ev.v; });
+      if (ev.kind === 'elec') S.tracks.forEach(tr => { if (tr.owner === 'S' && newE(edges[tr.e]) && ev.lines.some(l => (tr.line||'').startsWith(l))) tr.elec = true; }); });
+    const lines = [];
+    STATE_EVENTS.forEach((ev, k) => { if (k < STATE_EVENTS_BASE || S.stateEvents.includes(k) || !passed(ev)) return; S.stateEvents.push(k);
+      if (ev.kind !== 'build') return;
+      ev.edges.forEach(([a, b]) => { const e = edgeByPair[cityIdx[a] + '-' + cityIdx[b]]; if (!e || S.tracks.some(x => x.e === e.i && x.owner === 'S' && x.v >= ev.v)) return;
+        S.tracks.push({ id:S.nid++, e:e.i, owner:'S', v:ev.v, elec:!!ev.elec, status:'ok', line:ev.name, cost:0, built:S.day }); });
+      lines.push(ev.name); });
+    S.mapVer = 2;
+    log('地图扩展', `地图新增西北、东北、西南边疆城市和蒙古、俄罗斯、中亚、南亚、东南亚、朝鲜半岛的海外城市。${lines.length ? `已开通的铁路新线：${lines.join('、')}。` : ''}${pols.length ? `已出台的开放政策：${pols.join('、')}。` : ''}`, 'info');
+  }
+  function fixUp(){ ensureFrontier(); ensureT2(); ensureT4(); ensureT5(); S.trains.forEach(t => { if (!t.cars) t.cars = defaultConsist(trainById[t.model]); }); recompute(); }
   // 在临时状态里迁移、校验、重建缓存；全部成功后才切换，失败时原局面原样保留
   function adopt(st, ver){
-    const errs = validateState(st, ver); if (errs.length) return { ok:false, msg:errs.join('；') };
+    const errs = validateState(st, ver); if (errs.length) { registerDesigns(S); return { ok:false, msg:errs.join('；') }; }
     const old = S;
     try { S = migrate(st); fixUp(); if (!fin(netWorth())) throw new Error('净资产计算异常'); }
-    catch(e) { S = old; if (S) { try { recompute(); } catch(_) {} } return { ok:false, msg:'存档内容损坏：' + (e && e.message || e) }; }
+    catch(e) { S = old; registerDesigns(S); if (S) { try { recompute(); } catch(_) {} } return { ok:false, msg:'存档内容损坏：' + (e && e.message || e) }; }
     return { ok:true };
   }
   let lastLoadErr = '';
@@ -1941,7 +2104,7 @@ const Game = (() => {
     S.cash += inc; S.month.overseas = inc; return inc; }
 
   return {
-    cities, edges, edgeByPair, adj, trainById, policyById, ACH, TRACK_CLASSES,
+    cities, edges, edgeByPair, adj, trainById, policyById, ACH, TRACK_CLASSES, edgeLock, lockText, BASE_EDGES,
     get S(){ return S; }, carById, isUnit, consistStats, trailLimit, maxCars, carAvailable, carPrice, defaultConsist, setConsist, comfortMul, get econ(){ return econ; }, get pairInfo(){ return pairInfo; }, get stateTime(){ return stateTime; },
     newGame, tick, recompute, ym, dateOf, cpi, rate, popOf, freightOf, fmtW, clsOfV, feeRate, stateFeeBase,
     buildQuote, buildTrack, upgradeQuote, upgradeTrack, canBuildClass, trainPrice, available, buyTrain, sellTrain, assignTrain,
@@ -1953,6 +2116,7 @@ const Game = (() => {
     ensureT4, controlPct, warOf, warAt, warRespond, raidPct, diluteQuote, defendDilute, greenmailQuote, defendGreenmail, GOV, govAccept, govDecline, govProgressNow, govMetric, mkStr, rivalNodes,
     SIGNALS, SVC, sigOf, capOf, get trackUtil(){ return trackUtil; }, signalQuote, upgradeSignal, setService, routeStats,
     ensureT2, availOf, yrsSinceOvh, overhaulQuote, overhaul, acceptContract, declineContract, contractKey, bondRate, bondRoom, issueBond, valuation, ipoCheck, doIPO, setPayout, secondaryQuote, secondary, buyback, marketCap, acquireQuote, acquireRival, ttmProfit, repMul, genContracts,
+    succClass, CLASS_NAME, successorOf, endingSoon, buyable, FAR_END, sellerName, buyUsed, consistAt, PLATFORMS, designUnlock, designBase, designQuote, createDesign, cancelDesign, DESIGN_MAX,
     modelEra, ERA, isBranch, trainOnBranch, eraOf, eraFare, eraMaint, sellQuote, acceptUsed, declineUsed, routeKm,
     SUPER, superQuote, startSuper, FRANCHISE, FR_YEARS, frBid, frTrips, frOf, OVERSEAS, ovQuote, ovBid, hsrKm, ensureT6,
     GRADES, gradeOf, setGrade, sleeperFrac, DEPOT_LV, depotsOf, depotQuote, buildDepot, depotCandidates, nearDepot, get depotCover(){ return depotCover; }, cityKm,

@@ -299,6 +299,7 @@ const Art = (() => {
     CORAIL:['coach','#9aa3a8','#e3701e'], EUROFIMA:['coach','#e9dcc0','#9b1c2c'], MK3:['coach','#c9ccd0','#1f3a6e'], SU_KUPE:['coach','#355f3c','#d8c25a'], J24:['coach','#1d2f6b','#f2f2f2'],
     P62:['box','#7a3b2a'], C62A:['gond','#2b2b2b'], C64:['gond','#33302c'], C70:['gond','#6b2a20'], C80:['gond','#a9b0b5'], G60:['tank','#1e1e1e'], N17:['flat','#3a3a3a'], X1K:['cont','#4a4f55'], US_HOPPER:['hopper','#4a2f22'], US_STACK:['stack','#3d4248'],
     RW25G:['coach','#c0442b','#f3eee2'], YZ25Z:['coach','#f2f2ee','#1f5aa6'], YZ25T:['coach','#f3f3ef','#1d4f91'], P64:['box','#7a3b2a'], P70:['box','#6e3326'], G70:['tank','#262626'], KM70:['hopper','#4a4f55'], X2K:['stack','#3d4248'], NX70:['flat','#3a3a3a'],
+    YZ27:['coach','#eef0ee','#2a7f8f'], YW27:['coach','#eef0ee','#2a5f8f'], RW27:['coach','#eef0ee','#7a2f3f'], C82:['gond','#5b2a22'], KM82:['hopper','#55595e'], P82:['box','#6a3a2c'], G82:['tank','#2c2c2c'], X4K:['cont','#4a4f55'], NX82:['flat','#3d3d3d'],
   };
   function carSvg(c){
     const [shape, col, st] = CAR_LOOK[c.id] || [c.kind==='pax'?'coach':'box', '#666', '#ccc'];

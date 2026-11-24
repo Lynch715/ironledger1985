@@ -28,11 +28,14 @@
   const ownerColor = o => o==='P' ? P.own : o==='S' ? '#8095b0' : (RIVAL[o] ? RIVAL[o].color : '#999');
   const artCache = {};
   // 车辆立绘：优先加载 img/trains/<车型ID>.png，没有图片时显示程序生成的SVG
-  const art = id => `<div class="tart"><img src="img/trains/${id}.png" alt="" onload="this.parentNode.classList.add('has-img')" onerror="this.remove()">${artCache[id] || (artCache[id] = Art.svg(G.trainById[id]))}</div>`;
+  // 自主设计车型用平台立绘（m.img）
+  const artOf = (m, key) => `<div class="tart"><img src="img/trains/${(m && m.img) || m.id}.png" alt="" onload="this.parentNode.classList.add('has-img')" onerror="this.remove()">${artCache[key] || (artCache[key] = Art.svg(m))}</div>`;
+  const art = id => artOf(G.trainById[id], id);
   const carCache = {};
   const carArt = id => `<div class="tart"><img src="img/cars/${id}.png" alt="" onload="this.parentNode.classList.add('has-img')" onerror="this.remove()">${carCache[id] || (carCache[id] = Art.car(G.carById[id]))}</div>`;
   const consistText = t => { const m = G.trainById[t.model]; if (G.isUnit(m)) return '固定编组'; const c = (t.cars||[]).filter(x => x.n); return c.length ? c.map(x => `${(G.carById[x.id]||{name:x.id}).name}×${x.n}`).join(' + ') : '<span class="neg">未编组</span>'; };
   const typeName = { steam:'蒸汽', diesel:'内燃', electric:'电力', emu:'电动车组', dmu:'内燃动车组' };
+  const powerName = m => m.fuel === 'h2' ? '氢能' : m.fuel === 'hybrid' ? '氢电混合' : typeName[m.type];
   const useName = { pax:'客运', freight:'货运' };
 
   // ---------------- 地图 ----------------
@@ -100,7 +103,13 @@
       const a = C[e.a], b = C[e.b]; const x1 = sx(a.lon), y1 = sy(a.lat), x2 = sx(b.lon), y2 = sy(b.lat);
       const ts = edgeTracks(e).filter(t => (t.owner==='S' ? ui.layers.state : t.owner==='P' ? true : ui.layers.rivals));
       const all = edgeTracks(e); if (e.sup && !all.length) return;
-      if (!all.length){ if (ui.layers.cand || ui.selEdge === e.i){ ctx.setLineDash([2,5]); ctx.strokeStyle = ui.selEdge===e.i ? '#ffd27a' : P.cand; ctx.lineWidth = 1.2; line(x1,y1,x2,y2); ctx.setLineDash([]); } }
+      const locked = e.pol && G.edgeLock(e);
+      if (!all.length){ if (ui.layers.cand || ui.selEdge === e.i){ ctx.setLineDash(locked ? [1,6] : [2,5]); ctx.strokeStyle = ui.selEdge===e.i ? '#ffd27a' : (e.abroad || e.xb) ? (locked ? 'rgba(140,70,50,.32)' : 'rgba(150,62,40,.6)') : P.cand; ctx.lineWidth = 1.2; line(x1,y1,x2,y2); ctx.setLineDash([]); } }
+      if (e.xb && (all.length || ui.layers.cand)){ // 口岸标记：走廊中点画一道关卡短线
+        const mx = (x1+x2)/2, my = (y1+y2)/2, L0 = Math.hypot(x2-x1, y2-y1) || 1, qx = -(y2-y1)/L0, qy = (x2-x1)/L0, k = 5;
+        ctx.strokeStyle = locked ? 'rgba(122,42,18,.35)' : 'rgba(122,42,18,.85)'; ctx.lineWidth = 1.6;
+        line(mx - qx*k - (x2-x1)/L0*1.6, my - qy*k - (y2-y1)/L0*1.6, mx + qx*k - (x2-x1)/L0*1.6, my + qy*k - (y2-y1)/L0*1.6);
+        line(mx - qx*k + (x2-x1)/L0*1.6, my - qy*k + (y2-y1)/L0*1.6, mx + qx*k + (x2-x1)/L0*1.6, my + qy*k + (y2-y1)/L0*1.6); }
       const n = ts.length, dx = x2-x1, dy = y2-y1, L = Math.hypot(dx,dy) || 1, nx = -dy/L, ny = dx/L;
       ts.forEach((t, k) => {
         const off = (k - (n-1)/2) * 3.4; const ox = nx*off, oy = ny*off;
@@ -108,7 +117,7 @@
         if (t.owner === 'S'){ col = t.v >= 250 ? P.stateHsr : t.elec ? P.stateElec : P.state; lw = t.v >= 250 ? 2.4 : 1.6; }
         else if (t.owner === 'P'){ col = P.own; lw = t.v >= 250 ? 4 : 3; }
         else { col = ownerColor(t.owner); lw = t.v >= 250 ? 3 : 2.2; }
-        ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.globalAlpha = t.status === 'build' ? 0.75 : 1;
+        ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.globalAlpha = t.status === 'build' ? 0.75 : locked ? 0.4 : 1;
         if (t.status === 'build') ctx.setLineDash([6,4]);
         line(x1+ox, y1+oy, x2+ox, y2+oy); ctx.setLineDash([]);
         if (t.v >= 250 && t.status === 'ok'){ ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 0.9; line(x1+ox,y1+oy,x2+ox,y2+oy); }
@@ -253,7 +262,7 @@
   cv.addEventListener('touchmove', e => { e.preventDefault(); if (!tch) return; const p = tpts(e);
     if (tch.mode === 'pan' && p.length === 1){ const dx = p[0].x-tch.x, dy = p[0].y-tch.y; if (Math.abs(dx)+Math.abs(dy) > 8) tch.moved = true; if (tch.moved){ view.ox = tch.ox + dx; view.oy = tch.oy + dy; } }
     else if (tch.mode === 'pinch' && p.length >= 2){ const r = cv.getBoundingClientRect(); const d = Math.hypot(p[0].x-p[1].x, p[0].y-p[1].y); const mx = (p[0].x+p[1].x)/2 - r.left, my = (p[0].y+p[1].y)/2 - r.top;
-      const ns = Math.max(8, Math.min(72, tch.s * d / Math.max(10, tch.d))); const k = ns / tch.s;
+      const ns = Math.max(4, Math.min(72, tch.s * d / Math.max(10, tch.d))); const k = ns / tch.s;
       view.s = ns; view.ox = mx - (tch.mx - tch.ox)*k; view.oy = my - (tch.my - tch.oy)*k; } }, { passive:false });
   cv.addEventListener('touchend', e => { e.preventDefault(); if (!tch) return;
     if (tch.mode === 'pan' && !tch.moved && !e.touches.length) mapClick({ clientX:tch.x, clientY:tch.y, target:cv });
@@ -276,7 +285,7 @@
   top.querySelector('.topbtns').addEventListener('click', () => setMenu(false));
   ui.setSheet = setSheet; ui.sheet = () => sheet;
   cv.addEventListener('wheel', e => { e.preventDefault(); const r = cv.getBoundingClientRect(); zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1/1.15); }, { passive:false });
-  function zoomAt(px, py, k){ const ns = Math.max(8, Math.min(72, view.s * k)); k = ns / view.s; view.ox = px - (px - view.ox)*k; view.oy = py - (py - view.oy)*k; view.s = ns; }
+  function zoomAt(px, py, k){ const ns = Math.max(4, Math.min(72, view.s * k)); k = ns / view.s; view.ox = px - (px - view.ox)*k; view.oy = py - (py - view.oy)*k; view.s = ns; }
   document.querySelectorAll('#zoom button').forEach(b => b.onclick = () => { const z = +b.dataset.z; const r = cv.getBoundingClientRect(); if (!z) fit(); else zoomAt(r.width/2, r.height/2, z); });
   function hit(mx, my){
     const TT = matchMedia('(pointer:coarse)').matches; let best = null, bd = TT ? 24 : 14;
@@ -391,7 +400,7 @@
         <div class="grid3">
           <div class="stat"><label>市区人口</label><b>${pop.toFixed(0)}</b><small>&nbsp;万</small></div>
           <div class="stat"><label>货运指数</label><b>${G.freightOf(c, y).toFixed(1)}</b></div>
-          <div class="stat"><label>地区</label><b style="font-size:14px">${c.region}</b></div>
+          <div class="stat"><label>${c.abroad ? '国家' : '地区'}</label><b style="font-size:14px">${c.abroad || c.region}</b></div>
         </div>
         ${cityEconBox(c, y)}
         ${cityEstateBox(c, y)}
@@ -409,8 +418,9 @@
       box.innerHTML = `<button class="x" data-close aria-label="关闭详情">${icon('close')}</button>
         <h2>${C[e.a].name} — ${C[e.b].name}</h2>
         <div class="muted">${e.dist} km · 地形系数 ${e.terrain}${(()=>{ const h = HexMap.edgeTerrain(C[e.a], C[e.b]); return ` · 沿线地形 ×${h.factor}（最难路段：${h.worst}）`; })()}${e.plateau ? ' · <span class="gold">高原线路</span>' : ''}${e.line ? ' · ' + e.line : ''}</div>
+        ${e.xb || e.abroad ? `<div class="muted">${e.xb ? '跨境' : '境外'} · ${e.country}${G.edgeLock(e) ? ` · <span class="neg">${G.lockText(e)}</span>` : ''}</div>` : ''}
         <div class="table-scroll" tabindex="0" role="region" aria-label="数据表" style="margin-top:8px"><table class="t"><tr><th>产权</th><th class="r">速度</th><th>电气化</th><th class="r">过轨费(客)</th></tr>
-        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${ownerName(t.owner)}${t.status==='build'?' <span class="tag">在建</span>':''}</td><td class="num r">${t.v}</td><td>${t.elec?'是':'否'}</td><td class="num r">${t.owner==='P'?'—':G.feeRate(t,'pax',G.ym(S.day).y).toFixed(0)+' 元/列km'}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">尚无线路，可抢先修建</td></tr>'}
+        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${t.owner === 'S' && e.abroad ? e.country + '国家铁路' : ownerName(t.owner)}${t.status==='build'?' <span class="tag">在建</span>':''}</td><td class="num r">${t.v}</td><td>${t.elec?'是':'否'}</td><td class="num r">${t.owner==='P'?'—':G.feeRate(t,'pax',G.ym(S.day).y).toFixed(0)+' 元/列km'}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">尚无线路，可抢先修建</td></tr>'}
         </table></div><div class="sep"></div><div class="muted">修建或改造请在右侧「建设」页操作。</div>`;
       box.classList.add('show');
     } else box.classList.remove('show');
@@ -514,11 +524,12 @@
     } else {
       const e = E[ui.selEdge]; const ts = edgeTracks(e); const mine = ts.find(t => t.owner==='P');
       html += `<h2>${C[e.a].name} — ${C[e.b].name} <span class="tag">${e.dist} km</span></h2>
-        <div class="muted" style="margin-bottom:8px">地形系数 ${e.terrain}${e.west ? ' · 中西部' : ''}${e.plateau ? ' · <span class="gold">高原线路（需高原型机车）</span>' : ''}</div>
+        <div class="muted" style="margin-bottom:8px">地形系数 ${e.terrain}${e.west ? ' · 中西部' : ''}${e.plateau ? ' · <span class="gold">高原线路（需高原型机车）</span>' : ''}${e.xb ? ` · <span class="gold">跨境 · ${e.country}</span>（口岸通关${e.gauge ? '并换轮' : ''}，单程多 ${e.gauge ? 4 : 1.5} 小时）` : e.abroad ? ` · <span class="gold">境外 · ${e.country}</span>` : ''}</div>
+        ${G.edgeLock(e) ? `<div class="hint">${icon('warning', '未开放')} ${G.lockText(e)}。政策出台前，这条走廊不能修建，也不能开行本公司列车。</div>` : (e.abroad || e.xb) ? `<div class="hint">境外与跨境线路不享受国内建设补贴${S.unlock.X4 ? '，可获丝路合作基金补贴 20%' : ''}；跨境旅客受签证限制，客流低于国内同等城市。</div>` : ''}
         <div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t"><tr><th>产权方</th><th class="r">最高速度</th><th>电气化</th><th class="r">过轨费 客/货</th></tr>
-        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${ownerName(t.owner)} ${t.status==='build'?`<span class="tag">在建 · ${Math.max(0,Math.ceil((t.done-S.day)/30))}个月</span>`:''}${t.upg?`<span class="tag blue">改造中</span>`:''}</td><td class="num r">${t.v} km/h</td><td>${t.elec ? icon('check', '已电气化') : '—'}</td><td class="num r">${G.feeRate(t,'pax',y).toFixed(0)} / ${G.feeRate(t,'freight',y).toFixed(0)}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">该走廊尚无任何线路 —— 抢先修建可独享并收取过轨费</td></tr>'}
+        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${t.owner === 'S' && e.abroad ? e.country + '国家铁路' : t.owner === 'S' && e.xb ? '国家铁路（跨境联运）' : ownerName(t.owner)} ${t.status==='build'?`<span class="tag">在建 · ${Math.max(0,Math.ceil((t.done-S.day)/30))}个月</span>`:''}${t.upg?`<span class="tag blue">改造中</span>`:''}</td><td class="num r">${t.v} km/h</td><td>${t.elec ? icon('check', '已电气化') : '—'}</td><td class="num r">${G.feeRate(t,'pax',y).toFixed(0)} / ${G.feeRate(t,'freight',y).toFixed(0)}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">该走廊尚无任何线路 —— 抢先修建可独享并收取过轨费</td></tr>'}
         </table></div><div class="dim" style="font-size:11px;margin-top:4px">过轨费单位：元/列·公里（按当年物价）</div>`;
-      if (!mine){
+      if (!mine && !G.edgeLock(e)){
         html += `<h3>修建自有线路</h3><div class="card">` + G.TRACK_CLASSES.map(cl => {
           const ok = G.canBuildClass(cl.id); const q = G.buildQuote(e, cl.id, cl.id >= 2 || ui.bElec);
           const pol = G.policyById[cl.unlock];
@@ -665,7 +676,7 @@
     if (!S.trains.length) return html + `<div class="hint" style="margin-top:10px">车队为空。前往「购车」页采购第一列车。</div>` + depotHTML();
     const ropts = sel => `<option value="">— 未分配 —</option>` + S.routes.map(r => `<option value="${r.id}" ${sel===r.id?'selected':''}>${G.isBranch(r) ? '［支线］' : ''}${esc(r.name)}</option>`).join('');
     const old = S.trains.filter(t => ['ended','obsolete'].includes(G.eraOf(t))), oldMain = old.filter(t => t.route && !G.trainOnBranch(t));
-    if (old.length) html += `<div class="card" style="margin-top:10px;padding:8px 10px;font-size:12px"><b>车型换代</b>　车队里有 <b>${old.length}</b> 列车属于已停产或淘汰车型${oldMain.length ? `，其中 ${oldMain.length} 列仍跑干线：在干线上旧车票价打折、维修费更高` : ''}。<br><span class="dim">把旧车调到<b>支线</b>（起讫有二三线城市，或全程 200 km 以内）就没有票价折扣，维修费还能降 10%；也可以直接出售，或等同业来求购。</span></div>`;
+    if (old.length) html += `<div class="card" style="margin-top:10px;padding:8px 10px;font-size:12px"><b>车型换代</b>　车队里有 <b>${old.length}</b> 列车属于已停产或淘汰车型${oldMain.length ? `，其中 ${oldMain.length} 列仍跑干线：在干线上旧车票价打折、维修费更高` : ''}。<br><span class="dim">把旧车调到<b>支线</b>（起讫有二三线城市，或全程 200 km 以内）就没有票价折扣，维修费还能降 10%；也可以直接出售，或等同业来求购。</span>${(() => { const ss = [...new Set(old.map(t => { const s = G.successorOf(G.trainById[t.model]); return s ? s.name : ''; }).filter(Boolean))]; return ss.length ? `<br>同级别可换的新车：<b>${ss.map(esc).join('、')}</b>` : ''; })()}</div>`;
     const uo = (S.usedOffers || []).filter(o => S.trains.some(t => t.id === o.tid) && o.expire > S.day);
     if (uo.length) html += `<h3>同业求购</h3>${uo.map(o => { const t = S.trains.find(x => x.id === o.tid), q = G.sellQuote(t), rv = (G.RIVALS||RIVALS).find(x => x.id === o.rid);
       return `<div class="card" style="padding:8px 10px"><div class="row sb" style="flex-wrap:wrap;gap:6px"><span><b>${esc(rv ? rv.name : '同业')}</b> 求购 <b>${esc(t.name)}</b> <span class="dim">${G.trainById[t.model].name}</span></span><span class="num gold">${W(o.price)}</span></div>
@@ -723,8 +734,9 @@
     if (cur) html += `<div class="card"><div class="row sb"><b>进行中：${esc(cur.name)}</b><span class="num">${Math.floor(rd.pts)} / ${cur.pts}</span></div><div class="bar g" style="margin:6px 0"><i style="width:${Math.min(100, rd.pts/cur.pts*100)}%"></i></div><div class="dim" style="font-size:12px">${rd.lastGain ? `每月约 ${rd.lastGain.toFixed(1)} 点，预计 ${Math.ceil((cur.pts - rd.pts)/rd.lastGain)} 个月完成` : rd.lv ? '下月结算后显示进度' : '<span class="neg">研发投入为 0，项目停滞</span>'}</div></div>`;
     html += ps.filter(p => p.key !== rd.cur).map(p => `<div class="row sb" style="padding:6px 0;border-bottom:1px solid var(--line)"><div><b>${esc(p.name)}</b> <span class="dim">${p.pts} 点</span><br><span class="dim" style="font-size:12px">${p.desc}${p.m ? ' · ' + esc(p.m.name) : ''}</span>${p.locked ? `<br><span class="neg" style="font-size:12px">${p.locked}</span>` : ''}</div><button class="btn sm" data-act="rdStart" data-v="${p.key}" ${p.locked ? 'disabled' : ''}>${rd.cur ? '切换到此项目' : '立项'}</button></div>`).join('');
     if (!ps.length) html += '<div class="dim">暂无可立项的项目。购买 2 台以上同型进口车后，可立项国产化。</div>';
-    const done = Object.keys(rd.done||{}); if (done.length) html += `<div style="font-size:12px;margin-top:8px">已完成：${done.map(k => k.startsWith('loc_') ? (G.trainById[k.slice(4)]||{}).name + ' 国产化' : (G.OWN_MODELS.find(o => o.id===k)||{}).name).join('、')}</div>`;
+    const done = Object.keys(rd.done||{}); if (done.length) html += `<div style="font-size:12px;margin-top:8px">已完成：${done.map(k => k.startsWith('loc_') ? (G.trainById[k.slice(4)]||{}).name + ' 国产化' : k.startsWith('dz_') ? ((rd.designs||[]).find(d => d.research === k) || { name:'自主设计' }).name : (G.OWN_MODELS.find(o => o.id===k)||{}).name).join('、')}</div>`;
     html += `<div class="dim" style="font-size:11px;margin-top:6px">切换项目时，已积累的点数会保留在原项目上。</div>`;
+    html += designHTML();
     return html;
   }
 
@@ -864,8 +876,9 @@
   function pMarket(){
     const S = G.S; const y = G.ym(S.day).y; const f = ui.mf;
     const chip = (k, v, n) => `<button class="chip ${f[k]===v?'on':''}" data-act="mf" data-k="${k}" data-v="${v}">${n}</button>`;
-    const catBar = `<div class="filters" style="margin-bottom:12px">${chip('cat','loco','机车 / 动车组')}${chip('cat','car','客车厢 / 货车厢')}</div>`;
+    const catBar = `<div class="filters" style="margin-bottom:12px">${chip('cat','loco','机车 / 动车组')}${chip('cat','car','客车厢 / 货车厢')}${chip('cat','used','二手车市场')}</div>`;
     if (f.cat === 'car') return pCars(chip, catBar);
+    if (f.cat === 'used') return pUsed(chip, catBar);
     let list = TRAINS.filter(m => (f.use==='all'||m.use===f.use) && (f.type==='all'|| (f.type==='emu' ? (m.type==='emu'||m.type==='dmu') : m.type===f.type)) && (f.origin==='all' || (f.origin==='cn' ? !m.imported : !!m.imported)));
     list = list.filter(m => !m.research || (S.rd && S.rd.done[m.research]));
     if (f.show === 'sale') list = list.filter(m => G.available(m));
@@ -882,26 +895,68 @@
       const av = G.available(m); const p = G.trainPrice(m);
       const capTxt = m.use==='pax' ? `${m.cap} 人` : `${m.cap.toLocaleString()} t`;
       const needElec = m.type==='electric' || m.type==='emu';
-      html += `<div class="tcard ${av?'':'na'}">
-        <div class="art">${art(m.id)}<span class="flag">${m.country}</span><span class="yr">${m.year}–${m.end>=2030?'':m.end}</span></div>
+      const soon = av && G.endingSoon(m), succ = (soon || (!av && m.end < y)) ? G.successorOf(m) : null;
+      const succHTML = succ ? `<div class="succ" style="margin-top:6px;font-size:12px">${soon ? '推荐替代' : '接替车型'}：<b>${esc(succ.name)}</b> <span class="dim">${succ.vmax} km/h · ${succ.use==='pax' ? (G.isUnit(succ) ? succ.cap + ' 人' : succ.power.toLocaleString() + ' kW') : succ.cap.toLocaleString() + ' t'}${G.available(succ) ? ' · 在售' : ' · ' + succ.year + ' 年上市'}</span> <button class="btn sm" data-act="mfFind" data-v="${succ.id}">查看</button></div>` : '';
+      html += `<div class="tcard ${av?'':'na'}" id="tc_${m.id}">
+        <div class="art">${art(m.id)}<span class="flag">${m.country}</span><span class="yr">${m.year}–${m.end>=G.FAR_END?'':m.end}</span></div>
         <div class="body">
-          <div class="row sb model-heading"><div class="model-title"><div class="model-identity"><span class="name clip-name" title="${esc(m.name)}">${esc(m.name)}</span>${av && y - m.year <= 1 ? ' <span class="tag green">新车</span>' : ''}${av && m.end === y ? ' <span class="tag red">今年停产</span>' : ''}</div><span class="en clip-name" title="${esc(m.en)}">${esc(m.en)}</span></div><span class="tag ${m.use==='pax'?'blue':'green'}">${useName[m.use]} · ${typeName[m.type]}</span></div>
+          <div class="row sb model-heading"><div class="model-title"><div class="model-identity"><span class="name clip-name" title="${esc(m.name)}">${esc(m.name)}</span>${av && y - m.year <= 1 ? ' <span class="tag green">新车</span>' : ''}${soon ? ` <span class="tag red" title="${m.end} 年底停止接受订购，已有车辆照常运营">${m.end === y ? '今年停产' : '即将停产 · ' + m.end}</span>` : ''}${m.design ? ' <span class="tag">自主设计</span>' : ''}</div><span class="en clip-name" title="${esc(m.en)}">${esc(m.en)}</span></div><span class="tag ${m.use==='pax'?'blue':'green'}">${useName[m.use]} · ${powerName(m)}</span></div>
           <div class="specs">
             <div><label>最高速度</label><b>${m.vmax} km/h</b></div>
             <div><label>功率</label><b>${m.power.toLocaleString()} kW</b></div>
             <div><label>${m.use==='pax'?'定员':'牵引定数'}</label><b>${capTxt}</b></div>
             <div><label>轴式</label><b style="font-size:11px">${m.axle}</b></div>
           </div>
-          <div class="note">${m.note}<br><span class="dim">制造：${m.maker}${needElec?' · 需电气化线路':''}${m.tilt?' · 摆式车体：普速/快速线上可提速20%':''}${m.plateau?' · 高原适应型':''}</span></div>
+          <div class="note">${m.note}<br><span class="dim">制造：${m.maker}${needElec?' · 需电气化线路':''}${m.tilt?' · 摆式车体：普速/快速线上可提速20%':''}${m.plateau?' · 高原适应型':''}${m.fuel==='h2'?' · 不需要电气化':''}</span>${succHTML}</div>
           <div class="buyrow">
             <div class="price"><span class="num gold" style="font-size:15px">${fmtY(p.total)}</span><div class="dim pbrk">${p.consist ? `<span>机车 ${W(p.loco)}</span><span>默认编组 ${p.dc.map(x => G.carById[x.id].name + '×' + x.n).join('、')} ${W(p.consist)}</span>` : '<span>固定编组</span>'}<span>${p.tariff ? '含关税 ' + pct(p.tariff) + ' · ' : ''}运行成本 ${(m.run*1.3*G.cpi(y)).toFixed(0)} 元/列km</span></div></div>
-            ${av ? `<div class="buyact"><select id="br_${m.id}">${ropts}</select><button class="btn primary sm" data-act="buy" data-m="${m.id}">购买</button></div>` : `<span class="tag">${m.year > y ? m.year + ' 年上市' : '已停产（' + m.end + '）'}</span>`}
+            ${av ? `<div class="buyact"><select id="br_${m.id}">${ropts}</select><button class="btn primary sm" data-act="buy" data-m="${m.id}">购买</button></div>` : `<span class="tag" ${m.year > y ? '' : 'title="已有车辆照常运营；想再添同款可去二手车市场"'}>${m.year > y ? m.year + ' 年上市' : '已停产（' + m.end + '）· 可找二手'}</span>`}
           </div>
         </div></div>`;
     });
     return html;
   }
 
+  // —— 二手车市场 ——
+  const eraBadge = e => e === 'new' ? '<span class="tag green">新型</span>' : e === 'ended' ? '<span class="tag">已停产</span>' : e === 'obsolete' ? '<span class="tag red">淘汰车型</span>' : '';
+  function pUsed(chip, catBar){
+    const S = G.S; const y = G.ym(S.day).y; const L = (S.usedMarket || []).filter(o => o.expire > S.day && G.trainById[o.model]);
+    const ropts = `<option value="">暂不分配</option>` + S.routes.map(r => `<option value="${r.id}" ${ui.buyRoute===r.id?'selected':''}>${esc(r.name)}</option>`).join('');
+    let html = catBar + `<h2>二手车市场 <span class="tag">${y}年</span><span class="tag">${L.length} 台挂牌</span></h2>
+      <div class="hint" style="margin-bottom:10px">国家铁路和同业公司会把替换下来的旧车挂牌出售，每月更新，每台挂牌 90 天。<b>已经停产的车型也能在这里买到</b>；进口旧车属于国内转让，不收关税、不占进口额度。旧车按车龄折价、15 天交付，但维修费更高、可用率更低，买回来可以先安排一次大修。</div>`;
+    if (!L.length) html += '<div class="dim">本月没有挂牌车辆，下个月再来看看。</div>';
+    L.forEach(o => { const m = G.trainById[o.model]; const succ = G.successorOf(m);
+      const capTxt = m.use==='pax' ? `${m.cap} 人` : `${m.cap.toLocaleString()} t`;
+      html += `<div class="tcard"><div class="art">${art(m.id)}<span class="flag">${m.country}</span><span class="yr">车龄 ${o.age} 年</span></div><div class="body">
+        <div class="row sb model-heading"><div class="model-title"><div class="model-identity"><span class="name clip-name" title="${esc(m.name)}">${esc(m.name)}</span> ${eraBadge(G.modelEra(m))}</div><span class="en clip-name">${esc(m.en)} · 卖方 ${esc(G.sellerName(o.seller))}</span></div><span class="tag ${m.use==='pax'?'blue':'green'}">${useName[m.use]} · ${powerName(m)}</span></div>
+        <div class="specs"><div><label>最高速度</label><b>${m.vmax} km/h</b></div><div><label>${m.use==='pax'?'定员':'牵引定数'}</label><b>${capTxt}</b></div><div><label>距上次大修</label><b>${o.so.toFixed(1)} 年</b></div><div><label>同款新车价</label><b>${W(o.newP || o.price)}</b></div></div>
+        <div class="note">${o.cars && o.cars.length ? '随车编组：' + o.cars.map(x => (G.carById[x.id]||{name:x.id}).name + '×' + x.n).join('、') : '固定编组'}${succ ? `<br><span class="dim">同级别新车：${esc(succ.name)}${G.available(succ) ? '（在售）' : '（' + succ.year + ' 年上市）'}</span>` : ''}</div>
+        <div class="buyrow"><div class="price"><span class="num gold" style="font-size:15px">${fmtY(o.price)}</span><div class="dim pbrk"><span>约为同款新车价的 ${pct(o.price / (o.newP || o.price))}</span><span>还剩 ${Math.max(0, Math.ceil(o.expire - S.day))} 天下架</span></div></div>
+          <div class="buyact"><select id="bu_${o.id}">${ropts}</select><button class="btn primary sm" data-act="buyUsed" data-id="${o.id}">购买</button></div></div></div></div>`; });
+    return html; }
+  // —— 自主设计 ——
+  function designHTML(){ const rd = G.rdState(), why = G.designUnlock();
+    let h = `<h3>自主设计</h3><div class="dim" style="font-size:12px;margin-bottom:6px">以同级别当前最好的车型为基础，选择提速、加大载客（牵引）或节能，花研发点定型成本公司自己的车型。自主车型长期在产、不会停产，不收关税，30 天交付。同时最多 3 个方案在研，共可保留 ${G.DESIGN_MAX} 款。</div>`;
+    if (why) return h + `<div class="neg" style="font-size:12px">${why}</div>`;
+    h += G.PLATFORMS.map(p => { const b = G.designBase(p);
+      return `<div class="row sb" style="padding:6px 0;border-bottom:1px solid var(--line)"><div><b>${p.name}</b><br><span class="dim" style="font-size:12px">${b ? `参考车型：${esc(b.name)} · ${b.vmax} km/h · ${b.use==='freight' ? b.cap.toLocaleString() + ' t' : (G.isUnit(b) ? b.cap + ' 人' : b.power.toLocaleString() + ' kW')}` : '暂无参考车型'}</span></div><button class="btn sm" data-act="dzNew" data-v="${p.id}" ${b ? '' : 'disabled'}>设计新车</button></div>`; }).join('');
+    const ds = rd.designs || [];
+    if (ds.length) h += `<div style="font-size:12px;margin-top:8px;line-height:2">本公司设计：${ds.map(d => `<span class="tag" style="margin-right:4px">${esc(d.name)} · ${esc(d.en)} · ${rd.done[d.research] ? '已投产' : '在研'}</span>${rd.done[d.research] ? '' : `<button class="btn sm" data-act="dzCancel" data-v="${d.research}">撤销</button> `}`).join('')}</div>`;
+    return h; }
+  function designModal(){ const d = ui.dz; const rd = G.rdState(); const q = G.designQuote(d.pid, { sp:d.sp, cap:d.cap, eco:d.eco }); if (!q) { closeModal(); return; }
+    const p = q.p, b = q.base;
+    const opt = (k, lab, vals) => `<div class="row" style="gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap"><span style="width:72px">${lab}</span>${vals.map((v, i) => `<button class="btn sm ${d[k]===i ? 'primary' : ''}" data-dz="${k}" data-v="${i}" ${k==='sp' && i > 0 && q.spMax ? 'disabled' : ''}>${v}</button>`).join('')}</div>`;
+    const capOf = (m, v) => m.use === 'freight' ? v.toLocaleString() + ' t' : v + ' 人';
+    modal(`<div class="stamp">自主设计</div><h1>${p.name}</h1><div class="muted">参考车型：${esc(b.name)}（${esc(b.en)}）</div>
+      <div class="dz-art" style="max-width:360px;margin:8px auto">${artOf(Object.assign({}, b, { img:p.img }), 'plat_' + p.id + '_' + b.id)}</div>
+      ${opt('sp', '提速', ['持平', '+10%', '+20%'])}${opt('cap', p.use === 'freight' ? '牵引' : (G.isUnit(b) ? '载客' : '功率'), ['持平', '+10%', '+20%'])}${opt('eco', '节能', ['持平', '−10%', '−20%'])}
+      ${q.spMax ? '<div class="dim" style="font-size:11px">参考车型已经达到这个平台的速度上限，无法再提速。</div>' : ''}
+      <label class="row" style="gap:6px;margin:8px 0;align-items:center"><span style="width:72px">车型名称</span><input id="dzName" maxlength="14" placeholder="留空自动命名" value="${esc(d.name || '')}" style="flex:1;min-width:0"></label>
+      <dl class="kv"><dt>最高速度</dt><dd>${b.vmax} → <b>${q.vmax}</b> km/h</dd><dt>功率</dt><dd>${b.power.toLocaleString()} → <b>${q.power.toLocaleString()}</b> kW</dd>
+        <dt>${p.use === 'pax' ? '定员' : '牵引定数'}</dt><dd>${capOf(b, b.cap)} → <b>${capOf(b, q.cap)}</b>${p.use === 'pax' && !G.isUnit(b) ? '（机车定员取决于编组，功率决定能挂几节）' : ''}</dd>
+        <dt>运行成本</dt><dd>${b.run} → <b>${q.run}</b> 元/列km（1985 年价）</dd><dt>新车价格</dt><dd>${fmtY(q.price * 1e4)}</dd>
+        <dt>研发需要</dt><dd><b>${q.pts}</b> 研发点${rd.lastGain ? `，按目前投入约 ${Math.ceil(q.pts / rd.lastGain)} 个月` : rd.lv ? '' : '（<span class="neg">目前研发投入为 0</span>）'}</dd></dl>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn" data-m="close">取消</button><button class="btn primary" data-dz="ok">立项</button></div>`); }
   function pCars(chip, catBar){
     const S = G.S; const y = G.ym(S.day).y; const f = ui.mf;
     let list = CARS.filter(c => (f.ck==='all'||!f.ck||c.kind===f.ck) && (f.show==='all' || (f.show==='soon' ? c.year > y : G.carAvailable(c))));
@@ -911,7 +966,7 @@
       <div class="filters">${chip('show','sale','在售')}${chip('show','soon','即将上市')}${chip('show','all','全部图鉴')}</div>
       <div class="filters">${chip('ck','all','全部')}${chip('ck','pax','客车厢')}${chip('ck','freight','货车厢')}</div>`;
     list.forEach(c => { const av = G.carAvailable(c);
-      html += `<div class="tcard ${av?'':'na'}"><div class="art">${carArt(c.id)}<span class="flag">${c.country}</span><span class="yr">${c.year}–${c.end>=2020?'':c.end}</span></div><div class="body">
+      html += `<div class="tcard ${av?'':'na'}"><div class="art">${carArt(c.id)}<span class="flag">${c.country}</span><span class="yr">${c.year}–${c.end>=G.FAR_END?'':c.end}</span></div><div class="body">
         <div class="row sb model-heading"><b class="name clip-name" title="${esc(c.name)}">${esc(c.name)}</b><span class="tag ${c.kind==='pax'?'blue':'green'}">${c.kind==='pax'?'客车':'货车 · '+c.cargo}</span></div>
         <div class="specs">${c.kind==='pax' ? `<div><label>定员</label><b>${c.seats} 人</b></div><div><label>舒适度</label><b>${c.comfort.toFixed(1)}${c.ac ? ' ' + icon('cooling', '空调') : ''}</b></div>` : `<div><label>载重</label><b>${c.load} t</b></div><div><label>货类</label><b style="font-size:11px">${c.cargo}</b></div>`}
           <div><label>自重</label><b>${c.tare} t</b></div><div><label>构造速度</label><b>${c.vmax} km/h</b></div></div>
@@ -1175,6 +1230,11 @@
       case 'consist': { const t = S.trains.find(x => x.id === +b.dataset.id); ui.cdraft = { tid:t.id, n:{} }; (t.cars||[]).forEach(x => ui.cdraft.n[x.id] = x.n); consistModal(); break; }
       case 'acceptUsed': { const r = G.acceptUsed(+b.dataset.id); if (!r.ok) toast('无法成交', r.msg, 'bad'); else { toast('转让成交', `收到 ${W(r.price)}元。`, 'good'); snd('coin'); } renderPanel(true); renderTop(); break; }
       case 'declineUsed': G.declineUsed(+b.dataset.id); renderPanel(true); break;
+      case 'buyUsed': { const sel = $('#bu_' + b.dataset.id); const rid = sel && sel.value ? +sel.value : null; const r = G.buyUsed(+b.dataset.id, rid); if (!r.ok) toast('无法购买', r.msg, 'bad'); else { snd('tick'); toast('购入二手车', `${r.train.name} 约 15 天后交付。`, 'good'); } renderPanel(true); renderTop(); break; }
+      case 'mfFind': { const m = G.trainById[b.dataset.v]; if (!m) break; Object.assign(ui.mf, { cat:'loco', use:'all', type:'all', origin:'all', show: G.available(m) ? 'sale' : (m.year > G.ym(S.day).y ? 'soon' : 'all') }); renderPanel(true);
+        const el = document.getElementById('tc_' + m.id); if (el) { el.scrollIntoView({ block:'center', behavior:'smooth' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800); } break; }
+      case 'dzNew': { ui.dz = { pid:b.dataset.v, sp:0, cap:0, eco:0, name:'' }; designModal(); break; }
+      case 'dzCancel': { const k = b.dataset.v; if (ui.confirm === 'dz'+k){ ui.confirm = null; const r = G.cancelDesign(k); if (!r.ok) toast('无法撤销', r.msg, 'bad'); } else { b.textContent = '确认撤销'; ui.confirm = 'dz'+k; setTimeout(() => { if (ui.confirm==='dz'+k){ ui.confirm = null; renderPanel(true); } }, 3000); break; } renderPanel(true); break; }
       case 'sell': { const id = +b.dataset.id; if (ui.confirm === 't'+id){ G.sellTrain(id); ui.confirm = null; } else { ui.confirm = 't'+id; setTimeout(() => { if (ui.confirm==='t'+id){ ui.confirm = null; renderPanel(true); } }, 3000); } renderPanel(true); break; }
       case 'mf': ui.mf[b.dataset.k] = b.dataset.v; renderPanel(true); break;
       case 'buy': { const sel = $('#br_' + b.dataset.m); const rid = sel && sel.value ? +sel.value : null; const r = G.buyTrain(b.dataset.m, rid); if (!r.ok) toast('无法购买', r.msg, 'bad'); else snd('tick'), toast('订购成功', `${G.trainById[b.dataset.m].name} 将于 ${G.trainById[b.dataset.m].imported?'约 75':'约 30'} 天后交付${rid?'，届时自动投入运营':''}。`, 'good'); renderPanel(true); break; }
@@ -1229,6 +1289,11 @@
   function modal(html, wide){ $('#modalBox').className = 'box' + (wide ? ' wide' : ''); $('#modalBox').innerHTML = html; $('#modal').classList.add('show'); ui.modalOpen = true; }
   function closeModal(){ $('#modal').classList.remove('show'); ui.modalOpen = false; }
   $('#modal').addEventListener('click', e => {
+    const dz = e.target.closest('[data-dz]');
+    if (dz && !dz.disabled && ui.dz){ const k = dz.dataset.dz; const nm = $('#dzName'); if (nm) ui.dz.name = nm.value;
+      if (k === 'ok'){ const r = G.createDesign(ui.dz.pid, { sp:ui.dz.sp, cap:ui.dz.cap, eco:ui.dz.eco }, ui.dz.name); if (!r.ok) { toast('无法立项', r.msg, 'bad'); return; }
+        closeModal(); ui.dz = null; toast('设计立项', `「${r.model.name}」已加入科研项目。`, 'good'); renderPanel(true); return; }
+      ui.dz[k] = +dz.dataset.v; designModal(); return; }
     const cb = e.target.closest('[data-cm]');
     if (cb && !cb.disabled){ const k = cb.dataset.cm, d = ui.cdraft, id = cb.dataset.id;
       if (k === 'inc') d.n[id] = (d.n[id]||0) + 1; if (k === 'inc5') d.n[id] = (d.n[id]||0) + 5; if (k === 'dec') d.n[id] = Math.max(0, (d.n[id]||0) - 1);
@@ -1298,7 +1363,7 @@
     else if (p.type === 'franchLose'){ toast('未能中标', `${p.name} 拿下了干线经营权。`, 'bad'); showPolicyQueue(); }
     else if (p.type === 'newModels'){ setSpeed(0); const T = G.trainById, mini = id => { const m = T[id]; return `<div class="nm"><span class="thumb">${art(id)}</span><div><b>${m.name}</b> <span class="dim">${m.country} · ${useName[m.use]}</span><br><span class="dim" style="font-size:11px">${m.vmax} km/h · ${m.use==='pax' ? m.cap + ' 人' : m.cap.toLocaleString() + ' t'} · ${W(G.trainPrice(m).total)}</span></div></div>`; };
       modal(`<div class="stamp">${p.y} 年 · 车辆市场</div><h1>${p.nw.length ? '新车上市' : '车型换代'}</h1>${p.nw.length ? `<p>今年有 ${p.nw.length} 款新车型开始接受订购。</p><div class="nmgrid">${p.nw.map(mini).join('')}</div>` : ''}
-        ${p.ended.length ? `<p style="margin-top:10px"><b>停止生产：</b>${p.ended.map(id => T[id].name).join('、')}。已有车辆照常运营，但在干线上票价略降、维修费略涨，转卖价格也会走低。</p>` : ''}
+        ${p.ended.length ? `<p style="margin-top:10px"><b>停止生产：</b>${p.ended.map(id => { const s = G.successorOf(T[id]); return T[id].name + (s ? `（可换 ${s.name}）` : ''); }).join('、')}。已有车辆照常运营，但在干线上票价略降、维修费略涨，转卖价格也会走低。</p>` : ''}
         ${p.obs.length ? `<p><b>列为淘汰车型：</b>${p.obs.map(id => T[id].name).join('、')}。在干线上旅客不愿乘坐、配件也难找，建议调到支线运营或出售。</p>` : ''}
         <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">${p.ended.length || p.obs.length ? '<button class="btn" data-m="toFleet">查看车队</button>' : ''}${p.nw.length ? '<button class="btn" data-m="toMarket">去购车</button>' : ''}<button class="btn primary" data-m="resume">继续经营</button></div>`); }
     else if (p.type === 'superDone'){ const sp = G.SUPER.find(x => x.id === p.id); const e = E[sp.e]; setSpeed(0); modal(`<div class="stamp">超级工程 · 全线贯通</div><h1>${sp.name} 建成通车</h1><p>历时多年，${sp.name}全线贯通。${C[e.a].name}—${C[e.b].name}（${e.dist} km，${sp.v} km/h）正式并入本公司路网，现在可以规划经过这里的运营线路。公司商誉 +8。</p><div class="row" style="justify-content:flex-end"><button class="btn primary" data-m="resume">继续经营</button></div>`); }
@@ -1315,7 +1380,7 @@
       <div class="hero">${hero}</div>
       <p>1985&nbsp;年，“运力紧张”是全国铁路的头号难题：车站里挤满了买不到票的旅客，煤炭在坑口堆积如山。为此，国家出台《铁路经营权开放试点暂行办法》，允许社会资本组建铁路公司——修线、买车、开行列车，或者向国铁租用线路过轨运营。</p>
       <p class="dim" style="font-size:12px">本作以中国铁路发展史为背景：大提速、入世、路网规划、政企分开等是真实历史节点；公司、试点制度、人物及各项数值效果均为虚构设定。</p>
-      <p>你将经营一家首批试点企业，从三十多年的改革浪潮中一路走来：价格闯关、大提速、入世、高铁时代……点亮全国 ${C.length} 座城市，<span class="keep-together">打造属于你的铁路帝国。</span></p>
+      <p>你将经营一家首批试点企业，从三十多年的改革浪潮中一路走来：价格闯关、大提速、入世、高铁时代……点亮全国 ${C.filter(c => !c.abroad).length} 座城市，再把列车开到蒙古、俄罗斯、中亚和东南亚，<span class="keep-together">打造属于你的铁路帝国。</span></p>
       <div class="row start-company"><label class="muted" for="coInput">公司名称</label><input id="coInput" value="华夏铁道实业" maxlength="12"></div>
       <label class="row start-options"><input type="checkbox" id="tutChk" ${window.Tutorial && Tutorial.seen() ? '' : 'checked'}> 开启新手引导（自由经营，约 10 分钟）</label>
       <div class="start-actions">
@@ -1347,6 +1412,7 @@
       <li>点击地图上的走廊（实线为已建线路，虚线为可修建的走廊），在「建设」页选择等级与电气化后开工。</li>
       <li>自有线路：自己的列车免过轨费；国铁与同业列车会过轨并向你付费（可在「财务」调整费率）。</li>
       <li>抢先修建国铁历史上即将修建的线路（如大秦、京九、青藏），国铁会取消计划，转而租用你的线路。</li>
+      <li><b>边疆与海外</b>：地图西至中亚和巴基斯坦，北至西伯利亚，南至新加坡。跨境走廊中间有口岸标记，要等开放政策出台才能修建和开车：1992 年沿边开放（俄、蒙、朝、中亚），1996 年中越联运，2010 年泛亚铁路（老挝、泰国、马来西亚、新加坡），2013 年丝路走廊（巴基斯坦、缅甸、尼泊尔、中吉乌），2018 年半岛铁路（虚构）。过境要通关，去宽轨国家还要换轮；跨境客流受签证限制，境外线路不享受国内建设补贴。</li>
       <li>电力机车与动车组需要电气化线路；青藏线格尔木以南需高原型机车（NJ2）。摆式列车在普速/快速线上可提速 20%。</li></ul>
       <h3>列车等级与机务段</h3><ul>
       <li>「线路」页可为每条客运线路选择直达、特快、普快或夜行卧铺。直达只停起讫两站，特快只停大城市；夜行卧铺适合 6–16 小时的行程，需要在编组里多挂硬卧、软卧。</li>

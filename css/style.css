@@ -597,3 +597,6 @@ table.t.fin-table :is(th,td).r{width:29%}
   .rb-head .rb-toggle{min-height:36px;min-width:0}
   #routebar.open .rb-stops{max-height:min(22dvh,140px)}
 }
+
+/* 换代：查看替代车型时高亮 */
+.tcard.flash{outline:2px solid #b3261e;outline-offset:2px;transition:outline-color .6s}
