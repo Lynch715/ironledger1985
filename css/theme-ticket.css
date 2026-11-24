@@ -43,3 +43,5 @@ html,body{font-family:"Songti SC","Noto Serif SC","STSong",serif}
 .t td .btn{white-space:nowrap}
 #top .pos{color:#a8e6b0}#top .neg{color:#ffb3a7}
 .btn.danger{color:#b3261e;border-color:#c98a84;background:#fffaf0}.btn.danger:hover{background:#b3261e;color:#fff}
+/* 性能：图层按钮底色已 95% 不透明，背景模糊看不出来却要每帧重算，关闭 */
+#maptools .chip{backdrop-filter:none}

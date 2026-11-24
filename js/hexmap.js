@@ -3,7 +3,7 @@
 //  地形按经纬度多边形近似划分，仅用于游戏示意，不表示任何行政边界。
 //  渲染：连续地形底色（柔和过渡 + 高程晕渲）→ 海岸水纹 → 河湖 → 六边形格网 → 手绘图标
 // =============================================================
-const HexMap = (() => {
+const HexMap = (function hexMapModule(){
   const COS = Math.cos(35 * Math.PI/180);
   const wx = lon => (lon - 104) * COS, wy = lat => -(lat - 35);
   const B = { lon0:60, lon1:142, lat0:0, lat1:57 };   // 2026-11-24 扩图：西至瓜达尔，东至库页岛，南至新加坡，北至克拉斯诺亚尔斯克
@@ -279,12 +279,15 @@ const HexMap = (() => {
 
   // ---------- 生成离屏地形图（K = 每世界单位像素） ----------
   let elevGrid = null;
-  function build(K){
+  function dims(K){
     const x0 = wx(B.lon0), x1 = wx(B.lon1), y0 = wy(B.lat1), y1 = wy(B.lat0);
     // 画布像素上限：手机浏览器单张画布不能超过约 1670 万像素，扩图后按上限自动降低精度
     const budget = (typeof matchMedia === 'function' && matchMedia('(pointer:coarse)').matches) ? 1.0e7 : 1.55e7;
     K = Math.min(K, Math.sqrt(budget / ((x1-x0) * (y1-y0))));
-    const W = Math.ceil((x1-x0)*K), H = Math.ceil((y1-y0)*K);
+    return { x0, x1, y0, y1, K, W:Math.ceil((x1-x0)*K), H:Math.ceil((y1-y0)*K) };
+  }
+  function build(K){
+    const D = dims(K), x0 = D.x0, x1 = D.x1, y0 = D.y0, y1 = D.y1, W = D.W, H = D.H; K = D.K;
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const c = cv.getContext('2d');
     const px = x => (x - x0) * K, py = y => (y - y0) * K;
     const toLL = (X, Y) => [X / COS + 104, -Y + 35];
@@ -515,5 +518,32 @@ const HexMap = (() => {
     for (let i = 0; i <= 20; i++){ const f = i/20; const t = classify(a.lon + (b.lon-a.lon)*f, a.lat + (b.lat-a.lat)*f); const cost = T[t].cost || 1.8; sum += cost; n++; if (cost > wc){ wc = cost; worst = t; } }
     return { factor: +(sum/n).toFixed(2), worst: T[worst].name };
   }
-  return { build, classify, edgeTerrain, T, LABELS, RIVERS, wx, wy };
+  // ---------- 地形图缓存（浏览器 IndexedDB） ----------
+  // 第一次打开时照常生成，生成后存一份图片；之后打开直接读图（在后台线程解码），省掉 1～6 秒的生成时间。
+  // 缓存键 = 本文件全部源码（含所有地形、海岸、河湖数据和绘制代码）的指纹 + 画布尺寸：
+  // 改了地图数据或绘制方式，指纹就变，旧缓存自动作废并被新图覆盖。
+  const CACHE_DB = 'tdcq_cache', CACHE_ID = 'terrain';
+  let srcSig = null;
+  function strHash(str, seed){ let h = seed >>> 0; for (let i = 0; i < str.length; i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
+  function cacheKey(D){ if (!srcSig){ const src = String(hexMapModule); srcSig = src.length.toString(36) + '-' + strHash(src, 2166136261) + '-' + strHash(src, 0x9747b28c); }
+    return ['v1', srcSig, D.W, D.H, D.K.toFixed(4)].join(':'); }
+  function idb(){ return new Promise((res, rej) => { if (typeof indexedDB === 'undefined') return rej(new Error('no idb'));
+    const r = indexedDB.open(CACHE_DB, 1); r.onupgradeneeded = () => r.result.createObjectStore('map'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); r.onblocked = () => rej(new Error('blocked')); }); }
+  async function loadCached(K){
+    if (typeof createImageBitmap !== 'function') return null;
+    const D = dims(K), key = cacheKey(D), db = await idb();
+    const rec = await new Promise((res, rej) => { const q = db.transaction('map', 'readonly').objectStore('map').get(CACHE_ID); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+    db.close();
+    if (!rec || rec.key !== key || !rec.blob) return null;
+    const bmp = await createImageBitmap(rec.blob);
+    if (bmp.width !== D.W || bmp.height !== D.H){ bmp.close && bmp.close(); return null; }
+    return { canvas:bmp, x0:D.x0, y0:D.y0, K:D.K, cells:null, cached:true };
+  }
+  function saveCache(t){
+    try { if (!t || t.cached || !t.canvas.toBlob) return; const key = cacheKey(dims(72));
+      if (t.canvas.width !== dims(72).W) return;
+      t.canvas.toBlob(blob => { if (!blob) return; idb().then(db => { const tx = db.transaction('map', 'readwrite'); tx.objectStore('map').put({ key, blob, at:Date.now() }, CACHE_ID); tx.oncomplete = tx.onerror = () => db.close(); }).catch(() => {}); }, 'image/webp', 0.95);
+    } catch(e) {}
+  }
+  return { build, loadCached, saveCache, classify, edgeTerrain, T, LABELS, RIVERS, wx, wy };
 })();

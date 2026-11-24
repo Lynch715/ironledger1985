@@ -29,23 +29,42 @@
   const artCache = {};
   // 车辆立绘：优先加载 img/trains/<车型ID>.png，没有图片时显示程序生成的SVG
   // 自主设计车型用平台立绘（m.img）
-  const artOf = (m, key) => `<div class="tart"><img src="img/trains/${(m && m.img) || m.id}.png" alt="" onload="this.parentNode.classList.add('has-img')" onerror="this.remove()">${artCache[key] || (artCache[key] = Art.svg(m))}</div>`;
-  const art = id => artOf(G.trainById[id], id);
-  const carCache = {};
-  const carArt = id => `<div class="tart"><img src="img/cars/${id}.png" alt="" onload="this.parentNode.classList.add('has-img')" onerror="this.remove()">${carCache[id] || (carCache[id] = Art.car(G.carById[id]))}</div>`;
+  // 性能：优先用压缩后的 WebP（img/trains/s|m/<ID>.webp：s 给列表小图，m 给卡片大图），没有就退回原 PNG，再没有才用 SVG。
+  // 图片加载成功过一次后，后续重绘不再附带隐藏的 SVG，减少面板每次重绘的节点数。
+  const artModel = {}, carCache = {}, imgOK = {};
+  const svgOf = k => k[0] === 'c' ? (carCache[k.slice(2)] || (carCache[k.slice(2)] = Art.car(G.carById[k.slice(2)]))) : (artCache[k.slice(2)] || (artCache[k.slice(2)] = Art.svg(artModel[k.slice(2)])));
+  window.__artOk = img => { imgOK[img.dataset.k] = img.getAttribute('src'); img.parentNode.classList.add('has-img'); };
+  window.__artErr = img => { const d = img.parentNode; if (img.dataset.png){ const p = img.dataset.png; img.removeAttribute('data-png'); img.src = p; return; }
+    delete imgOK[img.dataset.k]; const k = img.dataset.k.split('|')[0]; img.remove(); if (d){ d.classList.remove('has-img'); if (!d.querySelector('svg')) d.insertAdjacentHTML('beforeend', svgOf(k)); } };
+  function tartHTML(dir, id, k, sz){ const ik = k + '|' + sz, ok = imgOK[ik];
+    if (ok) return `<div class="tart has-img"><img src="${ok}" alt="" data-k="${ik}" onerror="__artErr(this)"></div>`;
+    return `<div class="tart"><img src="img/${dir}/${sz}/${id}.webp" data-png="img/${dir}/${id}.png" alt="" data-k="${ik}" onload="__artOk(this)" onerror="__artErr(this)">${svgOf(k)}</div>`; }
+  const artOf = (m, key, sz) => { artModel[key] = m; return tartHTML('trains', (m && m.img) || m.id, 't:' + key, sz || 'm'); };
+  const art = (id, sz) => artOf(G.trainById[id], id, sz);
+  const carArt = (id, sz) => tartHTML('cars', id, 'c:' + id, sz || 'm');
+  // 性能：线路下拉框先只放当前选项（车队 180 列 × 60 条线路时可省下上万个 <option>），点开或聚焦时再补全
+  const fleetOptLabel = r => `${G.isBranch(r) ? '［支线］' : ''}${esc(r.name)}`;
+  const fleetOpts = sel => `<option value="">— 未分配 —</option>` + G.S.routes.map(r => `<option value="${r.id}" ${sel===r.id?'selected':''}>${fleetOptLabel(r)}</option>`).join('');
+  const lazyOpts = (_, sel) => { const r = sel && G.S.routes.find(x => x.id === sel); return `<option value="">— 未分配 —</option>` + (r ? `<option value="${r.id}" selected>${fleetOptLabel(r)}</option>` : ''); };
+  const buyOpts = () => `<option value="">暂不分配</option>` + G.S.routes.map(r => `<option value="${r.id}" ${ui.buyRoute===r.id?'selected':''}>${esc(r.name)}</option>`).join('');
+  const buyLazy = () => { const r = ui.buyRoute && G.S.routes.find(x => x.id === ui.buyRoute); return `<option value="">暂不分配</option>` + (r ? `<option value="${r.id}" selected>${esc(r.name)}</option>` : ''); };
+  function fillLazy(el){ if (!el || !el.dataset.lazy) return; const kind = el.dataset.lazy; el.removeAttribute('data-lazy'); const v = el.value;
+    el.innerHTML = kind === 'fleet' ? fleetOpts(v ? +v : null) : buyOpts(); el.value = v; }
+  ['pointerdown','mousedown','touchstart','focusin','keydown'].forEach(ev => document.addEventListener(ev, e => { const t = e.target; if (t && t.closest) fillLazy(t.closest('select[data-lazy]')); }, true));
   const consistText = t => { const m = G.trainById[t.model]; if (G.isUnit(m)) return '固定编组'; const c = (t.cars||[]).filter(x => x.n); return c.length ? c.map(x => `${(G.carById[x.id]||{name:x.id}).name}×${x.n}`).join(' + ') : '<span class="neg">未编组</span>'; };
   const typeName = { steam:'蒸汽', diesel:'内燃', electric:'电力', emu:'电动车组', dmu:'内燃动车组' };
   const powerName = m => m.fuel === 'h2' ? '氢能' : m.fuel === 'hybrid' ? '氢电混合' : typeName[m.type];
   const useName = { pax:'客运', freight:'货运' };
 
   // ---------------- 地图 ----------------
-  const cv = $('#map'), ctx = cv.getContext('2d');
+  const cv = $('#map'), mainCtx = cv.getContext('2d');
+  let ctx = mainCtx;   // 绘图目标：平时是地图画布，缓存静态图层时临时切到离屏画布
   let DPR = window.devicePixelRatio || 1;
   const view = { s: 18, ox: 0, oy: 0 };
   const COS = Math.cos(35 * Math.PI/180);
   const wx = lon => (lon - 104) * COS, wy = lat => -(lat - 35);
   const sx = lon => wx(lon) * view.s + view.ox, sy = lat => wy(lat) * view.s + view.oy;
-  function resize(){ const r = cv.getBoundingClientRect(); DPR = window.devicePixelRatio || 1; cv.width = r.width*DPR; cv.height = r.height*DPR; }
+  function resize(){ const r = cv.getBoundingClientRect(); DPR = window.devicePixelRatio || 1; cv.width = r.width*DPR; cv.height = r.height*DPR; ui.mapDrawn = false; }
   function fit(){ const r = cv.getBoundingClientRect(); const w = r.width, h = r.height - 34;
     const x0 = wx(86), x1 = wx(128.5), y0 = wy(48.5), y1 = wy(21);
     view.s = Math.min(w / (x1-x0), h / (y1-y0)) * 0.95; view.ox = w/2 - (x0+x1)/2*view.s; view.oy = h/2 - (y0+y1)/2*view.s; }
@@ -63,24 +82,98 @@
   const DESERT = [[79,39],[83,41.2],[88,42],[92,41],[93,39.6],[90,38.4],[85,37.6],[81,37.4]];
   const REGION_LABELS = [['华北',114.5,41.6],['东北',127,44.5],['华东',119.6,33.6],['华中',112.0,30.0],['华南',110.5,23.4],['西北',100.5,40],['西南',99.0,27.2]];
 
-  function edgeTracks(e){ const S = G.S; const ts = S.tracks.filter(t => t.e === e.i);
-    const ord = o => o==='S' ? 0 : o==='P' ? 9 : 5; return ts.sort((a,b) => ord(a.owner)-ord(b.owner)); }
+  const trackOrd = o => o==='S' ? 0 : o==='P' ? 9 : 5;
+  let tIdx = null;   // 仅在一帧绘制期间有效：走廊号 → 已排序的轨道
+  function buildTrackIdx(){ const m = new Map(); G.S.tracks.forEach(t => { let a = m.get(t.e); if (!a) m.set(t.e, a = []); a.push(t); });
+    m.forEach(a => a.sort((x,y) => trackOrd(x.owner)-trackOrd(y.owner))); return m; }
+  function edgeTracks(e){ if (tIdx) return (tIdx.get(e.i) || []).slice();
+    const S = G.S; const ts = S.tracks.filter(t => t.e === e.i); return ts.sort((a,b) => trackOrd(a.owner)-trackOrd(b.owner)); }
 
   const P = {};
   function loadPalette(){ const cs = getComputedStyle(document.documentElement); const d = { grid:'rgba(120,150,190,.07)', gridText:'rgba(140,165,200,.28)', plateau:'rgba(150,120,80,.10)', plateauLine:'rgba(170,140,90,.16)', terrText:'rgba(190,160,110,.22)', river:'rgba(80,150,220,.28)', region:'rgba(160,185,220,.07)', cand:'rgba(160,180,210,.25)', stateHsr:'#b8cdea', stateElec:'#7f97b8', state:'#55657d', own:'#f2b544', cityLit:'#ffd88a', city:'#26344b', cityLitLine:'#fff6dc', cityLine:'#7488a6', halo:'rgba(8,13,22,.85)', labelLit:'#ffe3a6', label:'#b9c6da', glow:'rgba(255,205,110,A)', font:'sans-serif' };
     Object.keys(d).forEach(k => { const v = cs.getPropertyValue('--m-' + k).trim(); P[k] = v || d[k]; }); }
   loadPalette();
-  let terr = null;
+  let terr = null, terrState = 'init';
+  function startTerrain(){
+    terrState = 'loading'; let done = false;
+    const ready = t => { done = true; terr = t; terrState = 'ready'; ui.mapDrawn = false; };
+    const buildNow = () => { if (done) return; ready(HexMap.build(72)); setTimeout(() => HexMap.saveCache(terr), 2000); };
+    const timer = setTimeout(buildNow, 3000);   // 缓存读不出来（浏览器异常）时不久等
+    let p; try { p = HexMap.loadCached(72); } catch(e) { p = Promise.resolve(null); }
+    p.then(t => { if (done) return; clearTimeout(timer); if (t) ready(t); else buildNow(); }, () => { if (done) return; clearTimeout(timer); buildNow(); });
+  }
+  // —— 性能：地形底图预先缩成多级（每级 1/2），按当前缩放挑最接近的一级，只画屏幕可见部分 ——
+  function terrLevels(){ if (terr.levels) return terr.levels; const L = [{ cv:terr.canvas, k:1 }]; let src = terr.canvas, k = 1;
+    while (src.width > 1600 && src.height > 800){ const c = document.createElement('canvas'); c.width = Math.ceil(src.width/2); c.height = Math.ceil(src.height/2);
+      const g = c.getContext('2d'); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; g.drawImage(src, 0, 0, c.width, c.height); k *= 2; L.push({ cv:c, k, sx:c.width/terr.canvas.width, sy:c.height/terr.canvas.height }); src = c; }
+    L[0].sx = L[0].sy = 1; return terr.levels = L; }
+  function drawTerrain(w, h){
+    const L = terrLevels(); const need = terr.K / (view.s * DPR);   // 每个屏幕像素对应几个原图像素
+    let lv = L[0]; for (const x of L) if (x.k <= need * 1.0001) lv = x;
+    const fx = terr.canvas.width/terr.K*view.s, fy = terr.canvas.height/terr.K*view.s;   // 整张底图在屏幕上的尺寸
+    const X0 = terr.x0*view.s+view.ox, Y0 = terr.y0*view.s+view.oy;
+    const ax = Math.max(0, -X0), ay = Math.max(0, -Y0), bx = Math.min(fx, w - X0), by = Math.min(fy, h - Y0);
+    if (bx <= ax || by <= ay) return;
+    const kx = lv.cv.width / fx, ky = lv.cv.height / fy;
+    // 源矩形向外取整一像素，避免边缘出现细缝
+    const s0x = Math.max(0, Math.floor(ax*kx) - 1), s0y = Math.max(0, Math.floor(ay*ky) - 1), s1x = Math.min(lv.cv.width, Math.ceil(bx*kx) + 1), s1y = Math.min(lv.cv.height, Math.ceil(by*ky) + 1);
+    ctx.drawImage(lv.cv, s0x, s0y, s1x - s0x, s1y - s0y, X0 + s0x/kx, Y0 + s0y/ky, (s1x - s0x)/kx, (s1y - s0y)/ky);
+  }
+  // —— 性能：静态图层缓存 ——
+  // 底层（地形、地名、走廊与轨道、线路高亮、流量/产业图层）和城市名标签层各画到一张离屏画布，
+  // 只有视角、轨道、图层开关、选中对象等变化时才重画；每帧只把它们贴上去，再画会动的城市光晕和列车。
+  const layerCv = { base:document.createElement('canvas'), label:document.createElement('canvas') };
+  const layerSt = { base:{ key:'', ok:false, prev:'', t:0 }, label:{ key:'', ok:false, prev:'', t:0 } };
+  let econSeen = null, econStamp = 0;
+  function baseKey(w, h){ const S = G.S;
+    if (G.econ !== econSeen){ econSeen = G.econ; econStamp++; }
+    const trk = S.tracks.map(t => t.e + t.owner + t.status + t.v + (t.elec ? 1 : 0)).join(',');
+    const selR = ui.selRoute && S.routes.find(r => r.id === ui.selRoute);
+    return [w, h, DPR, view.s, view.ox, view.oy, JSON.stringify(ui.layers), ui.selEdge, selR ? selR.color + selR.stops.join('-') : '', ui.mode, ui.draft.join('-'),
+      trk, Object.keys(S.unlock || {}).length, S.lastYM, (ui.layers.flow || ui.layers.industry) ? econStamp : 0, P.font].join('|'); }
+  function labelKey(w, h){ const S = G.S;
+    return [w, h, DPR, view.s, view.ox, view.oy, ui.layers.labels ? 1 : 0, ui.selCity, ui.draft.join('-'), Object.keys(S.lit).join(','),
+      Object.keys(S.stations).map(c => c + ':' + G.stationLv(+c)).join(','), G.ym(S.day).y, P.font].join('|'); }
+  // 视角连续变化（拖动、缩放）时直接画到地图上；停下来的那一帧再写进缓存，之后每帧只贴图
+  function cachedLayer(name, key, w, h, draw){
+    const st = layerSt[name], lc = layerCv[name], now = performance.now();
+    const moving = key !== st.prev; st.prev = key;
+    if (st.ok && key === st.key && now - st.t < 4000){ ctx.setTransform(1,0,0,1,0,0); ctx.drawImage(lc, 0, 0); ctx.setTransform(DPR,0,0,DPR,0,0); return; }
+    if (moving){ st.ok = false; draw(); return; }
+    if (lc.width !== cv.width || lc.height !== cv.height){ lc.width = cv.width; lc.height = cv.height; }
+    const g = lc.getContext('2d'); g.setTransform(1,0,0,1,0,0); g.clearRect(0, 0, lc.width, lc.height); g.setTransform(DPR,0,0,DPR,0,0);
+    const keep = ctx; ['lineCap','lineJoin','textAlign','textBaseline'].forEach(k => g[k] = keep[k]);
+    ctx = g; try { draw(); } finally { ctx = keep; ['lineCap','lineJoin','textAlign','textBaseline'].forEach(k => keep[k] = g[k]); }
+    st.key = key; st.ok = true; st.t = now;
+    ctx.setTransform(1,0,0,1,0,0); ctx.drawImage(lc, 0, 0); ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  // 城市光晕：同半径的径向渐变预先画成小图，每帧按呼吸亮度贴图（与逐帧建渐变的效果一致）
+  const glowCache = {};
+  function glowSprite(R){ const q = Math.max(1, Math.round(R*2)/2), key = q + P.glow; let g = glowCache[key]; if (g) return g;
+    const sc = Math.min(3, Math.max(1, DPR)), n = Math.ceil(q*2*sc) + 2, c = document.createElement('canvas'); c.width = c.height = n;
+    const x = c.getContext('2d'), m = n/2, gr = x.createRadialGradient(m, m, 0, m, m, q*sc); gr.addColorStop(0, P.glow.replace('A', '1')); gr.addColorStop(1, P.glow.replace('A', '0'));
+    x.fillStyle = gr; x.beginPath(); x.arc(m, m, q*sc, 0, Math.PI*2); x.fill(); return glowCache[key] = { c, r:n/2/sc }; }
+  function drawGlow(x, y, R, a){ const g = glowSprite(R); ctx.globalAlpha = a; ctx.drawImage(g.c, x - g.r, y - g.r, g.r*2, g.r*2); ctx.globalAlpha = 1; }
   function drawMap(now){
     const S = G.S; if (!S) return;
     const w = cv.width/DPR, h = cv.height/DPR;
+    if (!w || !h) return;   // 手机「面板全屏」时地图隐藏，不必绘制
+    ctx = mainCtx;
     ctx.setTransform(DPR,0,0,DPR,0,0);
     ctx.clearRect(0,0,w,h);
-    // 六边形地形底图（一次生成，缓存）
-    if (!terr) terr = HexMap.build(72);
+    // 六边形地形底图：先读浏览器里的缓存图，没有再现场生成
+    if (!terr){ if (terrState === 'init') startTerrain(); if (!terr){ ctx.fillStyle = '#a7c1c6'; ctx.fillRect(0,0,w,h); return; } }
+    tIdx = buildTrackIdx();
+    try {
+    cachedLayer('base', baseKey(w, h), w, h, () => drawBase(w, h));
+    drawLive(now, w, h);
+    } finally { tIdx = null; }
+  }
+  function drawBase(w, h){
+    const S = G.S;
     ctx.fillStyle = '#a7c1c6'; ctx.fillRect(0,0,w,h);
     ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(terr.canvas, terr.x0*view.s+view.ox, terr.y0*view.s+view.oy, terr.canvas.width/terr.K*view.s, terr.canvas.height/terr.K*view.s);
+    drawTerrain(w, h);
     // 地名（分层：按缩放显示，纸色描边）
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
     const SERIF = '"Songti SC","STSong","Noto Serif CJK SC","Source Han Serif SC",serif';
@@ -137,14 +230,20 @@
     }
     if (ui.layers.flow) drawFlows();
     if (ui.layers.industry) drawIndustry();
+  }
+  function drawLive(now, w, h){
+    const S = G.S;
     // 城市
     const pulse = 0.5 + 0.5*Math.sin(now/600);
+    const yNow = G.ym(S.day).y;
     C.forEach(c => {
-      const x = sx(c.lon), y = sy(c.lat), pop = G.popOf(c, G.ym(S.day).y);
+      const x = sx(c.lon), y = sy(c.lat);
+      if (x < -80 || y < -80 || x > w + 80 || y > h + 80) return;   // 屏幕外的城市不画
+      const pop = G.popOf(c, yNow);
       if (c.tier > 1){ // 二三线城市：方形站标
         const lv = G.stationLv(c.i), lit = !!S.lit[c.i], st = S.stations[c.i];
         const r = (c.tier === 2 ? 3.4 : 2.7) + Math.min(1.5, view.s/40);
-        if (lit){ const g = ctx.createRadialGradient(x,y,0,x,y,r*3.4); g.addColorStop(0, P.glow.replace('A', (0.45+0.2*pulse).toFixed(2))); g.addColorStop(1, P.glow.replace('A','0')); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r*3.4,0,Math.PI*2); ctx.fill(); }
+        if (lit) drawGlow(x, y, r*3.4, +(0.45+0.2*pulse).toFixed(2));
         ctx.beginPath(); ctx.rect(x-r, y-r, r*2, r*2);
         if (lv >= 1){ ctx.fillStyle = lit ? P.cityLit : P.city; ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = lit ? P.cityLitLine : P.cityLine; ctx.stroke();
           for (let k = 0; k < lv; k++){ ctx.fillStyle = lit ? '#7a2a12' : '#f3e7c9'; ctx.fillRect(x - r + 1.2 + k*(r*2-2.4)/3, y + r - 2.2, (r*2-2.4)/3 - 0.8, 1.4); } }
@@ -154,7 +253,7 @@
       }
       const r = 2.6 + Math.sqrt(pop)/6.5;
       const lit = !!S.lit[c.i];
-      if (lit){ const g = ctx.createRadialGradient(x,y,0,x,y,r*4.2); g.addColorStop(0, P.glow.replace('A', (0.55+0.2*pulse).toFixed(2))); g.addColorStop(1, P.glow.replace('A','0')); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r*4.2,0,Math.PI*2); ctx.fill(); }
+      if (lit) drawGlow(x, y, r*4.2, +(0.55+0.2*pulse).toFixed(2));
       ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
       ctx.fillStyle = lit ? P.cityLit : P.city; ctx.fill();
       ctx.lineWidth = lit ? 1.6 : 1.2; ctx.strokeStyle = lit ? P.cityLitLine : P.cityLine; ctx.stroke();
@@ -168,21 +267,29 @@
     // 列车
     if (ui.layers.trains) drawTrains(now);
     // 标签
-    if (ui.layers.labels){
+    if (ui.layers.labels) cachedLayer('label', labelKey(w, h), w, h, () => drawLabels(w, h));
+    // 浮动收入
+    drawFloaters(now);
+  }
+  function drawLabels(w, h){
+    const S = G.S; const yNow = G.ym(S.day).y;
+    {
       ctx.textBaseline = 'middle';
       C.forEach(c => {
         const pop = c.pop0; const lit = !!S.lit[c.i];
         const town = c.tier > 1, hasSt = town && G.stationLv(c.i) >= 1;
         if (town ? !(lit || hasSt || view.s > 30 || (c.tier === 2 && view.s > 22) || ui.selCity === c.i || ui.draft.includes(c.i))
                  : !(lit || pop >= 100 || view.s > 26 || ui.selCity === c.i || ui.draft.includes(c.i))) return;
-        const x = sx(c.lon), y = sy(c.lat), r = town ? 4 : 2.6 + Math.sqrt(G.popOf(c, G.ym(S.day).y))/6.5;
+        const x = sx(c.lon), y = sy(c.lat); if (x < -260 || y < -30 || x > w + 30 || y > h + 30) return;
+        const r = town ? 4 : 2.6 + Math.sqrt(G.popOf(c, yNow))/6.5;
         ctx.font = `${lit ? '600 ' : ''}${town ? 11 : pop >= 300 ? 13 : 12}px ${P.font}`;
         ctx.lineWidth = 3; ctx.strokeStyle = P.halo; ctx.strokeText(c.name, x + r + 4, y);
         ctx.fillStyle = lit ? P.labelLit : P.label; ctx.fillText(c.name, x + r + 4, y);
       });
       ctx.textBaseline = 'alphabetic';
     }
-    // 浮动收入
+  }
+  function drawFloaters(now){
     ctx.font = '600 11px ' + 'Menlo, monospace';
     ui.floaters = ui.floaters.filter(f => now - f.t0 < 1600);
     ui.floaters.forEach(f => { const k = (now - f.t0)/1600; ctx.globalAlpha = 1 - k; ctx.fillStyle = f.amt >= 0 ? '#2f6b3f' : '#b3261e'; ctx.fillText((f.amt>=0?'+':'') + (f.amt/1e4).toFixed(1) + '万', f.x + 6, f.y - 8 - k*18); });
@@ -216,11 +323,12 @@
 
   const trainPos = {};
   function drawTrains(now){
-    const S = G.S;
+    const S = G.S; const routeById = new Map(S.routes.map(r => [r.id, r]));
+    const w = cv.width/DPR, h = cv.height/DPR;
     S.trains.forEach(t => {
       delete trainPos[t.id];
       if (t.status !== 'run') return; const e = G.econ[t.id]; if (!e || !e.plan || !e.plan.ok) return;
-      const r = S.routes.find(r => r.id === t.route); if (!r) return;
+      const r = routeById.get(t.route); if (!r) return;
       const p = e.plan; let legs = p.legs; if (t.dir) legs = legs.slice().reverse().map(l => Object.assign({}, l, { from:l.to, to:l.from }));
       let tt = (t.phase||0) - 0.6; let x, y, ang = 0;
       if (tt <= 0){ const c = C[legs[0].from]; x = sx(c.lon); y = sy(c.lat); }
@@ -235,6 +343,7 @@
         if (!done){ const c = C[legs[legs.length-1].to]; x = sx(c.lon); y = sy(c.lat); }
       }
       trainPos[t.id] = { x, y };
+      if (x < -20 || y < -20 || x > w + 20 || y > h + 20) return;
       const m = G.trainById[t.model];
       ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
       const L = m.type === 'emu' ? 13 : 10;
@@ -462,6 +571,7 @@
     $('#tabs').querySelectorAll('button').forEach(b => b.onclick = () => { ui.tab = b.dataset.tab; if (ui.sheet && ui.sheet() === 0) ui.setSheet(1); renderTabs(); renderPanel(true); $('#panelBody').scrollTop = 0; }); }
   function signature(){ const S = G.S; return [ui.tab, S.lastYM, S.trains.map(t => t.status + t.route).join(','), S.tracks.filter(t => t.status==='ok').length, S.tracks.length, S.routes.length, S.tracks.filter(t=>t.upg).length, (S.offers||[]).length, (S.contracts||[]).length, (S.bonds||[]).length, !!S.ipo, S.ipo ? S.ipo.payoutLv : '', S.rivals.filter(r=>r.acquired).length, S.routes.map(r=>r.svc).join(''), S.tracks.filter(t=>t.sigUpg).length, (S.locals||[]).length, JSON.stringify(S.biz||{}), JSON.stringify(S.land||{}), S.routes.map(r=>r.slow?1:0).join(''), JSON.stringify(S.execs||{}), (S.cands||[]).length, S.trainLv||0, JSON.stringify(S.rd||{}), (S.gov||[]).map(g=>g.id+g.st).join(','), (S.wars||[]).map(w=>w.rid+(w.resp||'')+(w.ended?'x':'')).join(','), S.rivals.map(r=>(r.plan?r.plan.e:'')+':'+Math.round((r.stake||0)/1e6)).join(','), S.ipo?S.ipo.shares:0, JSON.stringify((S.franch||[]).map(f=>[f.uid,f.st,f.bid,f.holder])), JSON.stringify(S.supers||{}).length, (S.overseas||[]).map(x=>x.id+x.st).join(','), (S.depots||[]).map(d=>d.ci+':'+d.lv+(d.pend?'p':'')).join(','), S.routes.map(r=>r.grade||'').join(''), (S.usedOffers||[]).map(o=>o.id).join(',')].join('|'); }
   function renderPanel(force){
+    if (!force && document.body.classList.contains('m-map')) return;   // 手机「全屏地图」时面板收起，等展开再刷新
     const sig = signature();
     if (!force){ if (sig === ui.sig) return; const ae = document.activeElement; if (ae && $('#panelBody').contains(ae) && ['SELECT','INPUT'].includes(ae.tagName)) return; }
     ui.sig = sig;
@@ -695,12 +805,12 @@
       const money = running ? W(e.monthly) : W(-G.maintOf(t,y));
       const canOvh = G.yrsSinceOvh(t) >= 2 && t.status !== 'delivery' && t.status !== 'overhaul';
       html += `<div class="fcard">
-        <div class="fc-top"><span class="thumb">${art(t.model)}</span>
+        <div class="fc-top"><span class="thumb">${art(t.model, 's')}</span>
           <div class="fc-name"><div class="row" style="gap:6px;flex-wrap:wrap"><b class="clip-name" title="${esc(t.name)}">${esc(t.name)}</b>${st}${eraTag(t)}</div><div class="dim fc-sub" title="${esc(m.name)}">${m.name}${/[（(]/.test(m.name) ? '' : ' · ' + useName[m.use]}</div></div>
           <div class="fc-mon"><b class="num ${running ? (e.monthly>=0?'pos':'neg') : 'dim'}">${money}</b><small class="dim">${running ? '月净利' : '月维护'}</small></div></div>
         <div class="fc-meta"><span class="dim">${consistText(t)}</span><span>${ageText(t)}</span></div>
         ${t.route && e.plan && !e.plan.ok && !['delivery','overhaul','repair'].includes(t.status) ? `<div class="neg fc-why">${icon('warning')} ${esc(e.plan.why)}</div>`:''}
-        <div class="fc-act"><select data-act="assign" data-id="${t.id}" title="${esc((S.routes.find(r => r.id === t.route) || {}).name || '未分配')}">${ropts(t.route)}</select>
+        <div class="fc-act"><select data-act="assign" data-id="${t.id}" data-lazy="fleet" title="${esc((S.routes.find(r => r.id === t.route) || {}).name || '未分配')}">${lazyOpts(ropts, t.route)}</select>
           <div class="fc-lf" title="载客/载重率"><div class="bar ${m.use==='freight'?'g':''}"><i style="width:${Math.min(100,(e.lf||0)*100)}%"></i></div><span class="num dim">${pct(e.lf||0)}</span></div>
           <div class="fc-btns">${G.isUnit(m)?'':`<button class="btn sm" data-act="consist" data-id="${t.id}">编组</button>`}${canOvh ? `<button class="btn sm" data-act="overhaul" data-id="${t.id}" title="费用 ${W(G.overhaulQuote(t))}元，停运 ${G.depotCover[t.id] ? 18 : 30} 天${G.depotCover[t.id] ? '（就近机务段）' : ''}">大修</button>` : ''}<button class="btn sm danger" data-act="sell" data-id="${t.id}" title="二手市场回收价 ${W(G.sellQuote(t))}元">${ui.confirm==='t'+t.id ? '确认 ' + W(G.sellQuote(t)) : '出售'}</button></div></div>
       </div>`;
@@ -890,7 +1000,7 @@
       <div class="filters">${chip('use','all','全部用途')}${chip('use','pax','客运')}${chip('use','freight','货运')}</div>
       <div class="filters">${chip('type','all','全部动力')}${chip('type','steam','蒸汽')}${chip('type','diesel','内燃')}${chip('type','electric','电力')}${chip('type','emu','动车组')}<span aria-hidden="true" style="width:10px"></span>${chip('origin','all','全球')}${chip('origin','cn','国产')}${chip('origin','im','进口')}</div>`;
     if (!list.length) html += `<div class="dim">没有符合条件的车型。</div>`;
-    const ropts = `<option value="">暂不分配</option>` + S.routes.map(r => `<option value="${r.id}" ${ui.buyRoute===r.id?'selected':''}>${esc(r.name)}</option>`).join('');
+    const buyOptsLazy = buyLazy();
     list.forEach(m => {
       const av = G.available(m); const p = G.trainPrice(m);
       const capTxt = m.use==='pax' ? `${m.cap} 人` : `${m.cap.toLocaleString()} t`;
@@ -910,7 +1020,7 @@
           <div class="note">${m.note}<br><span class="dim">制造：${m.maker}${needElec?' · 需电气化线路':''}${m.tilt?' · 摆式车体：普速/快速线上可提速20%':''}${m.plateau?' · 高原适应型':''}${m.fuel==='h2'?' · 不需要电气化':''}</span>${succHTML}</div>
           <div class="buyrow">
             <div class="price"><span class="num gold" style="font-size:15px">${fmtY(p.total)}</span><div class="dim pbrk">${p.consist ? `<span>机车 ${W(p.loco)}</span><span>默认编组 ${p.dc.map(x => G.carById[x.id].name + '×' + x.n).join('、')} ${W(p.consist)}</span>` : '<span>固定编组</span>'}<span>${p.tariff ? '含关税 ' + pct(p.tariff) + ' · ' : ''}运行成本 ${(m.run*1.3*G.cpi(y)).toFixed(0)} 元/列km</span></div></div>
-            ${av ? `<div class="buyact"><select id="br_${m.id}">${ropts}</select><button class="btn primary sm" data-act="buy" data-m="${m.id}">购买</button></div>` : `<span class="tag" ${m.year > y ? '' : 'title="已有车辆照常运营；想再添同款可去二手车市场"'}>${m.year > y ? m.year + ' 年上市' : '已停产（' + m.end + '）· 可找二手'}</span>`}
+            ${av ? `<div class="buyact"><select id="br_${m.id}" data-lazy="buy">${buyOptsLazy}</select><button class="btn primary sm" data-act="buy" data-m="${m.id}">购买</button></div>` : `<span class="tag" ${m.year > y ? '' : 'title="已有车辆照常运营；想再添同款可去二手车市场"'}>${m.year > y ? m.year + ' 年上市' : '已停产（' + m.end + '）· 可找二手'}</span>`}
           </div>
         </div></div>`;
     });
@@ -921,7 +1031,7 @@
   const eraBadge = e => e === 'new' ? '<span class="tag green">新型</span>' : e === 'ended' ? '<span class="tag">已停产</span>' : e === 'obsolete' ? '<span class="tag red">淘汰车型</span>' : '';
   function pUsed(chip, catBar){
     const S = G.S; const y = G.ym(S.day).y; const L = (S.usedMarket || []).filter(o => o.expire > S.day && G.trainById[o.model]);
-    const ropts = `<option value="">暂不分配</option>` + S.routes.map(r => `<option value="${r.id}" ${ui.buyRoute===r.id?'selected':''}>${esc(r.name)}</option>`).join('');
+    const buyOptsLazy = buyLazy();
     let html = catBar + `<h2>二手车市场 <span class="tag">${y}年</span><span class="tag">${L.length} 台挂牌</span></h2>
       <div class="hint" style="margin-bottom:10px">国家铁路和同业公司会把替换下来的旧车挂牌出售，每月更新，每台挂牌 90 天。<b>已经停产的车型也能在这里买到</b>；进口旧车属于国内转让，不收关税、不占进口额度。旧车按车龄折价、15 天交付，但维修费更高、可用率更低，买回来可以先安排一次大修。</div>`;
     if (!L.length) html += '<div class="dim">本月没有挂牌车辆，下个月再来看看。</div>';
@@ -932,7 +1042,7 @@
         <div class="specs"><div><label>最高速度</label><b>${m.vmax} km/h</b></div><div><label>${m.use==='pax'?'定员':'牵引定数'}</label><b>${capTxt}</b></div><div><label>距上次大修</label><b>${o.so.toFixed(1)} 年</b></div><div><label>同款新车价</label><b>${W(o.newP || o.price)}</b></div></div>
         <div class="note">${o.cars && o.cars.length ? '随车编组：' + o.cars.map(x => (G.carById[x.id]||{name:x.id}).name + '×' + x.n).join('、') : '固定编组'}${succ ? `<br><span class="dim">同级别新车：${esc(succ.name)}${G.available(succ) ? '（在售）' : '（' + succ.year + ' 年上市）'}</span>` : ''}</div>
         <div class="buyrow"><div class="price"><span class="num gold" style="font-size:15px">${fmtY(o.price)}</span><div class="dim pbrk"><span>约为同款新车价的 ${pct(o.price / (o.newP || o.price))}</span><span>还剩 ${Math.max(0, Math.ceil(o.expire - S.day))} 天下架</span></div></div>
-          <div class="buyact"><select id="bu_${o.id}">${ropts}</select><button class="btn primary sm" data-act="buyUsed" data-id="${o.id}">购买</button></div></div></div></div>`; });
+          <div class="buyact"><select id="bu_${o.id}" data-lazy="buy">${buyOptsLazy}</select><button class="btn primary sm" data-act="buyUsed" data-id="${o.id}">购买</button></div></div></div></div>`; });
     return html; }
   // —— 自主设计 ——
   function designHTML(){ const rd = G.rdState(), why = G.designUnlock();
@@ -989,7 +1099,7 @@
         <div class="stat"><label>列车最高速度</label><b>${cs.vmax}</b><small>&nbsp;km/h</small>${m.use==='pax'?`<br><small>长途舒适加成 ×${cmf.toFixed(2)}</small>`:''}</div>
       </div>
       ${m.use==='freight' ? (() => { const cc = G.cargoCaps(Object.assign({}, t, { cars })).caps; const ks = Object.keys(cc); return `<div style="margin:-4px 0 10px;font-size:12px"><span class="dim">可装货种：</span>${ks.length ? ks.map(g => `<span class="tag" style="color:${CARGO[g].color};border-color:${CARGO[g].color}">${CARGO[g].name} ${cc[g].toLocaleString()} t</span>`).join(' ') : '<span class="neg">无</span>'} <span class="dim">· 敞车拉煤和矿石，棚车拉粮食和件杂货，罐车拉油，集装箱车拉集装箱；混编可兼顾多种货</span></div>`; })() : ''}
-      <div class="clist">${avail.map(c => `<div class="crow ${(d.n[c.id]||0) ? 'on' : ''}"><span class="thumb cthumb">${carArt(c.id)}</span>
+      <div class="clist">${avail.map(c => `<div class="crow ${(d.n[c.id]||0) ? 'on' : ''}"><span class="thumb cthumb">${carArt(c.id, 's')}</span>
         <div class="cinfo"><b class="clip-name" title="${esc(c.name)}">${esc(c.name)}</b><div class="dim">${c.country}${c.ac?' · 空调':''} · ${c.kind==='pax' ? c.seats + ' 座' : c.load + ' t'} · ${c.vmax} km/h · <span class="num">${W(G.carPrice(c))}</span>/辆${!G.carAvailable(c)?' · <span class="neg">已停产，只能减少</span>':''}</div></div>
         <div class="cstep"><button class="btn sm" data-cm="dec" data-id="${c.id}" aria-label="减少一节车厢">${icon('minus')}</button><b class="num">${d.n[c.id]||0}</b><button class="btn sm" data-cm="inc" data-id="${c.id}" aria-label="增加一节车厢" ${!G.carAvailable(c)?'disabled':''}>${icon('plus')}</button><button class="btn sm" data-cm="inc5" data-id="${c.id}" aria-label="增加五节车厢" ${!G.carAvailable(c)?'disabled':''}>${icon('plus')}5</button></div></div>`).join('')}
       </div>
@@ -1361,7 +1471,7 @@
     else if (p.type === 'franch'){ const f = (G.S.franch||[]).find(x => x.uid === p.uid); if (!f || f.st !== 'bid') { showPolicyQueue(); return; } setSpeed(0); modal(`<div class="stamp">招标公告 · 干线经营权</div>${frCard(f, true)}<div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn" data-m="resume">暂不投标</button></div>`); }
     else if (p.type === 'franchWin'){ const f = (G.S.franch||[]).find(x => x.uid === p.uid); setSpeed(0); modal(`<div class="stamp">中标通知</div><h1>${f ? esc(f.name) : '干线经营权'} 中标</h1><p>${f ? `本公司以每年 <b>${W(f.fee)}元</b> 中标，${G.FR_YEARS} 年内独家经营 ${C[f.a].name}—${C[f.b].name} 干线客运。沿线城市之间的客源份额提高 25%，本公司旅客列车在该干线上的国铁过轨费减半。<br><br>履约要求：每月在干线上开行不少于 <b>${f.minTrips}</b> 趟旅客列车（中标后有 6 个月准备期），连续 3 次不达标将被收回经营权。` : ''}</p><div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" data-m="toProj">查看项目</button><button class="btn primary" data-m="resume">继续经营</button></div>`); }
     else if (p.type === 'franchLose'){ toast('未能中标', `${p.name} 拿下了干线经营权。`, 'bad'); showPolicyQueue(); }
-    else if (p.type === 'newModels'){ setSpeed(0); const T = G.trainById, mini = id => { const m = T[id]; return `<div class="nm"><span class="thumb">${art(id)}</span><div><b>${m.name}</b> <span class="dim">${m.country} · ${useName[m.use]}</span><br><span class="dim" style="font-size:11px">${m.vmax} km/h · ${m.use==='pax' ? m.cap + ' 人' : m.cap.toLocaleString() + ' t'} · ${W(G.trainPrice(m).total)}</span></div></div>`; };
+    else if (p.type === 'newModels'){ setSpeed(0); const T = G.trainById, mini = id => { const m = T[id]; return `<div class="nm"><span class="thumb">${art(id, 's')}</span><div><b>${m.name}</b> <span class="dim">${m.country} · ${useName[m.use]}</span><br><span class="dim" style="font-size:11px">${m.vmax} km/h · ${m.use==='pax' ? m.cap + ' 人' : m.cap.toLocaleString() + ' t'} · ${W(G.trainPrice(m).total)}</span></div></div>`; };
       modal(`<div class="stamp">${p.y} 年 · 车辆市场</div><h1>${p.nw.length ? '新车上市' : '车型换代'}</h1>${p.nw.length ? `<p>今年有 ${p.nw.length} 款新车型开始接受订购。</p><div class="nmgrid">${p.nw.map(mini).join('')}</div>` : ''}
         ${p.ended.length ? `<p style="margin-top:10px"><b>停止生产：</b>${p.ended.map(id => { const s = G.successorOf(T[id]); return T[id].name + (s ? `（可换 ${s.name}）` : ''); }).join('、')}。已有车辆照常运营，但在干线上票价略降、维修费略涨，转卖价格也会走低。</p>` : ''}
         ${p.obs.length ? `<p><b>列为淘汰车型：</b>${p.obs.map(id => T[id].name).join('、')}。在干线上旅客不愿乘坐、配件也难找，建议调到支线运营或出售。</p>` : ''}
@@ -1479,7 +1589,8 @@
     }
     if (S){
       const ps = G.popups(); if (ps.length){ popupQueue.push(...ps); showPolicyQueue(); }
-      drawMap(now);
+      // 弹窗打开时游戏暂停、地图被半透明模糊背景盖住：不必逐帧重画（模糊背景每帧重算很费显卡）
+      if (!ui.modalOpen || !ui.mapDrawn) { drawMap(now); ui.mapDrawn = true; }
       tAcc += dt;
       if (tAcc > 0.25){ tAcc = 0; renderTop(); renderPanel(false);
         if (S.news[0] !== ui.newsTop){ const fresh = []; for (const n of S.news){ if (n === ui.newsTop) break; fresh.push(n); } ui.newsTop = S.news[0];
@@ -1495,5 +1606,5 @@
   renderTools(); renderTabs(); afterLoad();
   startScreen();
   requestAnimationFrame(loop);
-  window.__ui = ui; window.__cityXY = i => [sx(C[i].lon), sy(C[i].lat)];
+  window.__ui = ui; window.__terrReady = () => !!terr; window.__cityXY = i => [sx(C[i].lon), sy(C[i].lat)];
 })();

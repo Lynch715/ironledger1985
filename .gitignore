@@ -32,3 +32,15 @@
 /img/cars/*
 !/img/trains/*.png
 !/img/cars/*.png
+!/img/trains/s/
+/img/trains/s/*
+!/img/trains/s/*.webp
+!/img/trains/m/
+/img/trains/m/*
+!/img/trains/m/*.webp
+!/img/cars/s/
+/img/cars/s/*
+!/img/cars/s/*.webp
+!/img/cars/m/
+/img/cars/m/*
+!/img/cars/m/*.webp
