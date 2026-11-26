@@ -186,10 +186,10 @@ canvas.chart{width:100%;height:190px;display:block;background:var(--bg2);border:
 .flist{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .fcard{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
 .fc-top{display:flex;align-items:center;gap:10px}
-.fc-top .thumb{flex:none}
 .fc-name{flex:1;min-width:0}
-.fc-name b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fc-sub{font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fc-art{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.fc-art .thumb,.fc-art .thumb .tart{width:96px;height:32px}
 .fc-mon{flex:none;text-align:right;display:flex;flex-direction:column;line-height:1.25}
 .fc-mon b{font-size:14px;white-space:nowrap}.fc-mon small{font-size:10.5px}
 .fc-meta{display:flex;flex-wrap:wrap;justify-content:space-between;gap:2px 10px;font-size:11px;margin:6px 0 0}
@@ -316,7 +316,6 @@ table.t td.num{white-space:nowrap}
 #panelBody h2{padding-bottom:6px;border-bottom:3px double var(--line2);margin-bottom:12px}
 #panelBody h3{display:flex;align-items:center;gap:6px}
 #panelBody h3:before{content:"";width:6px;height:6px;background:var(--gold);flex:none;transform:rotate(45deg)}
-.fc-top .thumb,.fc-top .thumb .tart{width:112px;height:36px}
 .fcard{transition:border-color .15s}.fcard:hover{border-color:var(--line2)}
 .stat label{letter-spacing:.5px}
 .tcard .name{letter-spacing:.5px}
@@ -327,7 +326,6 @@ table.t td.num{white-space:nowrap}
   .brand{flex:none}
   .datebox{flex:1}
   #top{gap:4px 8px;padding-bottom:3px}
-  .fc-top .thumb,.fc-top .thumb .tart{width:84px;height:27px}
   /* 分屏时隐藏要闻条，地图更大；地图模式显示 */
   #ticker{display:none}
   body.m-map #ticker{display:flex}
@@ -451,9 +449,18 @@ table.t.fin-table :is(th,td).r{width:29%}
 .scn-footer button{min-inline-size:60px}
 .start-note{margin-top:14px;font-size:12px}
 
-.route-heading{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
-.route-title{min-inline-size:0}
-.route-title .clip-name{font-size:14px}
+.fold-toggle{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;width:100%;min-height:44px;padding:0;text-align:start;border:0;background:none;color:inherit}
+.fold-toggle:hover .fold-heading>b,.fold-toggle[aria-expanded=true] .fold-chevron{color:var(--gold)}
+.fold-toggle:focus-visible{outline:1px solid var(--gold);outline-offset:2px}
+.fold-summary{display:block;min-width:0}
+.fold-heading{display:flex;align-items:center;gap:6px;min-width:0;font-size:14px}
+.fold-heading :is(.tag,.swatch){flex:none}
+.fold-heading .swatch{margin:0}
+.fold-meta{display:flex;flex-wrap:wrap;gap:2px 10px;margin-top:2px;color:var(--text2);font-size:12px;font-variant-numeric:tabular-nums}
+.fold-meta>span{white-space:nowrap}
+.fold-chevron{color:var(--text2);line-height:1}
+.fold-toggle[aria-expanded=true] .fold-chevron{transform:rotate(180deg)}
+.fold-body{border-top:1px solid var(--line);margin-top:6px;padding-top:8px}
 .route-actions{justify-content:flex-end}
 .route-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
 .route-tools select{flex:1 1 120px}
@@ -497,7 +504,6 @@ table.t.fin-table :is(th,td).r{width:29%}
   .specs,#modal .grid3{grid-template-columns:repeat(2,minmax(0,1fr))}
   #coach{width:auto;max-height:calc(100dvh - 100px)}
   #routebar{top:43px;left:8px;right:8px;width:auto;max-inline-size:none}
-  .route-heading{grid-template-columns:minmax(0,1fr) auto}
   .name-cell .clip-name{max-inline-size:10em}
 }
 
@@ -544,14 +550,10 @@ table.t.fin-table :is(th,td).r{width:29%}
   .start-actions .btn{padding-inline:8px}
   .scn-footer{grid-template-columns:minmax(0,1fr)}
   .scn-footer button{justify-self:stretch}
-  .route-heading{grid-template-columns:minmax(0,1fr)}
   .route-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));justify-content:stretch}
   .route-tools{display:grid;grid-template-columns:auto minmax(0,1fr)}
   .route-tools button{grid-column:1 / -1;width:100%;margin:0}
-  .fc-top{display:grid;grid-template-columns:58px minmax(0,1fr) auto;gap:6px}
-  .fc-top .thumb,.fc-top .thumb .tart{width:58px;height:22px}
-  .fc-top .fc-name>div:first-child{align-items:flex-start}
-  .fc-top .fc-name>div:first-child>b{flex-basis:100%}
+  .fc-top{gap:6px}
   .fc-act select,.buyact select{min-height:44px}
   .fc-btns{flex:1 1 auto}
   .cfoot>div{flex-basis:100%}

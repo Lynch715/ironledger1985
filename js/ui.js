@@ -20,7 +20,7 @@
     /[+−-]?\d[\d,]*(?:\.\d+)?[ \u00a0]*(?:万人次|亿元(?:\/年)?|万元(?:\/km)?|万吨(?:\/月)?|km\/h|km|kW|公里|小时|个月|年月|年|月|日|元|列|天|次|人|吨|座|[%％])/g,
     '<span class="measure">$&</span>');
   const SPEEDS = [0, 1, 3, 7, 15];
-  const ui = { tab:'overview', speed:1, lastSpeed:1, selCity:null, selEdge:null, selRoute:null, mode:'view', draft:[],
+  const ui = { tab:'overview', speed:1, lastSpeed:1, selCity:null, selEdge:null, selRoute:null, mode:'view', draft:[], openDetails:{},
     layers:{ state:true, rivals:true, cand:true, trains:true, labels:true, flow:false, industry:false }, mf:{ use:'all', type:'all', origin:'all', show:'sale', cat:'loco', ck:'all' },
     buyRoute:null, sig:'', confirm:null, modalOpen:false, floaters:[], lastEvt:0, newsTop:null };
   const RIVAL = {}; RIVALS.forEach(r => RIVAL[r.id] = r);
@@ -45,7 +45,7 @@
   // 性能：线路下拉框先只放当前选项（车队 180 列 × 60 条线路时可省下上万个 <option>），点开或聚焦时再补全
   const fleetOptLabel = r => `${G.isBranch(r) ? '［支线］' : ''}${esc(r.name)}`;
   const fleetOpts = sel => `<option value="">— 未分配 —</option>` + G.S.routes.map(r => `<option value="${r.id}" ${sel===r.id?'selected':''}>${fleetOptLabel(r)}</option>`).join('');
-  const lazyOpts = (_, sel) => { const r = sel && G.S.routes.find(x => x.id === sel); return `<option value="">— 未分配 —</option>` + (r ? `<option value="${r.id}" selected>${fleetOptLabel(r)}</option>` : ''); };
+  const lazyOpts = r => `<option value="">— 未分配 —</option>` + (r ? `<option value="${r.id}" selected>${fleetOptLabel(r)}</option>` : '');
   const buyOpts = () => `<option value="">暂不分配</option>` + G.S.routes.map(r => `<option value="${r.id}" ${ui.buyRoute===r.id?'selected':''}>${esc(r.name)}</option>`).join('');
   const buyLazy = () => { const r = ui.buyRoute && G.S.routes.find(x => x.id === ui.buyRoute); return `<option value="">暂不分配</option>` + (r ? `<option value="${r.id}" selected>${esc(r.name)}</option>` : ''); };
   function fillLazy(el){ if (!el || !el.dataset.lazy) return; const kind = el.dataset.lazy; el.removeAttribute('data-lazy'); const v = el.value;
@@ -560,7 +560,16 @@
       if (k === 'toggle'){ ui.rbOpen = !ui.rbOpen; renderRouteBar(); }
       if (k === 'undo'){ ui.draft.pop(); renderRouteBar(); }
       if (k === 'cancel') cancelRoute();
-      if (k === 'ok'){ const r = G.createRoute(ui.draft); ui.selRoute = r.id; cancelRoute(); ui.tab = 'routes'; renderTabs(); renderPanel(true); toast('线路已创建', `${r.name}。现在可以为它购买或分配列车。`, 'good'); snd('horn'); }
+      if (k === 'ok'){
+        const r = G.createRoute(ui.draft);
+        ui.selRoute = r.id;
+        ui.openDetails.routes = String(r.id);
+        cancelRoute();
+        ui.tab = 'routes';
+        renderTabs(); renderPanel(true);
+        document.getElementById(`fold-routes-${r.id}`).scrollIntoView({ block:'nearest' });
+        toast('线路已创建', `${r.name}。现在可以为它购买或分配列车。`, 'good'); snd('horn');
+      }
     });
   }
 
@@ -576,10 +585,23 @@
     if (!force){ if (sig === ui.sig) return; const ae = document.activeElement; if (ae && $('#panelBody').contains(ae) && ['SELECT','INPUT'].includes(ae.tagName)) return; }
     ui.sig = sig;
     const body = $('#panelBody'); const st = body.scrollTop;
+    const focused = document.activeElement?.classList.contains('fold-toggle') ? document.activeElement.id : '';
     body.innerHTML = ({ overview:pOverview, build:pBuild, routes:pRoutes, fleet:pFleet, market:pMarket, contracts:pContracts, estate:pEstate, mgmt:pMgmt, finance:pFinance, policy:pPolicy, projects:pProjects, rivals:pRivals })[ui.tab]();
     body.scrollTop = st;
+    if (focused) document.getElementById(focused)?.focus({ preventScroll:true });
     if (ui.tab === 'finance'){ requestAnimationFrame(drawFinanceCharts); setTimeout(drawFinanceCharts, 60); setTimeout(drawStockChart, 70); }
     if (ui.tab === 'overview'){ requestAnimationFrame(drawMiniChart); setTimeout(drawMiniChart, 60); }
+  }
+
+  function foldCard(group, id, summary, detail, className = 'card', color = ''){
+    const key = `fold-${group}-${id}`;
+    const open = ui.openDetails[group] === String(id);
+    return `<div class="${className}"${color ? ` style="border-color:${esc(color)}"` : ''}>
+      <button class="fold-toggle" type="button" id="${key}" data-act="toggleDetail" data-group="${group}" data-id="${id}" aria-expanded="${open}" aria-controls="${key}-body">
+        <span class="fold-summary">${summary}</span><span class="fold-chevron">${icon('down')}</span>
+      </button>
+      <div class="fold-body" id="${key}-body"${open ? '' : ' hidden'}>${open ? detail() : ''}</div>
+    </div>`;
   }
 
   // —— 总览 ——
@@ -685,33 +707,36 @@
       <div class="dim" style="font-size:11px;margin-top:4px">「可争取」是相对国铁的竞争份额：你的列车比国铁越快，份额越高。货运只统计本线货车厢能装的货种。</div></div>`;
   }
   function pRoutes(){
-    const S = G.S; const y = G.ym(S.day).y;
+    const S = G.S;
     let html = `<div class="row sb"><h2>运营线路</h2><button class="btn primary sm" data-act="newRoute">${icon('plus')} 新建运营线路</button></div>`;
     if (!S.routes.length) html += `<div class="hint">还没有运营线路。点击 <b>新建运营线路</b>，然后在地图上点击起点和终点（中途可再点几个城市），系统会沿已建轨道自动寻路。线路可以经过国铁、同业或自有轨道，系统会为每列车自动选择最优轨道（自有优先）。</div>`;
+    const assigned = new Map();
+    for (const t of S.trains){
+      if (!t.route) continue;
+      if (!assigned.has(t.route)) assigned.set(t.route, []);
+      assigned.get(t.route).push(t);
+    }
     S.routes.forEach(r => {
-      const trains = S.trains.filter(t => t.route === r.id);
+      const trains = assigned.get(r.id) || [];
       const run = trains.filter(t => t.status==='run' && G.econ[t.id] && G.econ[t.id].plan.ok);
       let dist = 0; for (let k = 0; k < r.stops.length-1; k++) dist += G.edgeByPair[r.stops[k]+'-'+r.stops[k+1]].dist;
       const lf = run.length ? run.reduce((a,t) => a + G.econ[t.id].lf, 0) / run.length : 0;
       const monthly = run.reduce((a,t) => a + G.econ[t.id].monthly, 0);
-      // 区段产权（以首列车或通用内燃车估算）
-      const sample = run[0] || trains[0];
-      const plan = sample ? (G.econ[sample.id] && G.econ[sample.id].plan) : null;
-      html += `<div class="card" style="${ui.selRoute===r.id?'border-color:'+r.color:''}">
-        <div class="route-heading"><div class="row route-title"><span class="swatch" style="background:${r.color};width:14px;height:14px"></span><b class="clip-name" title="${esc(r.name)}">${esc(r.name)}</b>${G.isBranch(r) ? '<span class="tag" title="起讫有二三线城市或全程 200 km 以内：适合安排旧型车，旧车不打折、维修更省">支线</span>' : ''}</div>
-          <div class="row route-actions"><button class="btn sm" data-act="selRoute" data-id="${r.id}">${ui.selRoute===r.id?'取消高亮':'地图高亮'}</button>
-          <button class="btn sm danger" data-act="delRoute" data-id="${r.id}">${ui.confirm==='r'+r.id?'确认删除?':'删除'}</button></div></div>
+      const summary = `<span class="fold-heading"><span class="swatch" style="background:${esc(r.color)}"></span><b class="clip-name" title="${esc(r.name)}">${esc(r.name)}</b>${G.isBranch(r) ? '<span class="tag" title="起讫有二三线城市或全程 200 km 以内：适合安排旧型车，旧车不打折、维修更省">支线</span>' : ''}</span>
+        <span class="fold-meta"><span>${dist}&nbsp;km</span><span>列车 ${run.length}/${trains.length}</span><span>平均载客/载重 ${pct(lf)}</span><span class="${monthly>=0?'pos':'neg'}">预计月净利 ${W(monthly)}</span></span>`;
+      html += foldCard('routes', r.id, summary, () => {
+        // 区段产权以首列运营车辆为准，没有运营车辆时用首列已分配车辆。
+        const sample = run[0] || trains[0];
+        const plan = G.econ[sample?.id]?.plan;
+        return `<div class="row route-actions"><button class="btn sm" data-act="selRoute" data-id="${r.id}">${ui.selRoute===r.id?'取消高亮':'地图高亮'}</button>
+          <button class="btn sm danger" data-act="delRoute" data-id="${r.id}">${ui.confirm==='r'+r.id?'确认删除?':'删除'}</button></div>
         <div class="stops" style="margin:8px 0">${(() => { const st = G.stopFlags(r); return r.stops.map((c,k) => { const town = C[c].tier > 1, lv = G.stationLv(c); const mid = k > 0 && k < r.stops.length-1;
           const cls = st[k] ? 's' : 's pass'; const tip = !town ? '大城市车站' : lv < 1 ? '未开设车站，列车通过' : mid ? (st[k] ? '停靠（点击改为通过）' : '通过（点击改为停靠）') : '始发/终到站';
           return (k?`<span class="arr">${icon('next')}</span>`:'') + `<span class="${cls}${town?' town':''}" title="${tip}" ${town && lv >= 1 && mid ? `data-act="skip" data-id="${r.id}" data-c="${c}" style="cursor:pointer"` : ''}>${C[c].name}</span>`; }).join(''); })()}</div>
         <div class="dim" style="font-size:11px;margin:-4px 0 6px">方框为二三线城市：需先开设车站才能停靠；已开站的中途小站可点击切换「停靠 / 通过」。</div>
         <div class="grid3">
-          <div class="stat"><label>全程</label><b>${dist}</b><small>&nbsp;km</small></div>
-          <div class="stat"><label>列车</label><b>${run.length}/${trains.length}</b></div>
-          <div class="stat"><label>平均载客/载重率</label><b>${pct(lf)}</b></div>
           <div class="stat"><label>上月收入</label><b>${W(r.lastRev||0)}</b></div>
           <div class="stat"><label>上月运行+过轨</label><b>${W(r.lastCost||0)}</b></div>
-          <div class="stat"><label>预计月净利</label><b class="${monthly>=0?'pos':'neg'}">${W(monthly)}</b></div>
           ${(() => { const mg = run.length ? G.marginalOf(r.id) : null; if (!mg) return ''; return `<div class="stat" title="在这条线再加一列 ${G.trainById[mg.model].name}（同编组）后，全公司预计月净利的变化。新车自身约 ${W(mg.own)}；区段拥堵时会挤占已有列车的班次。"><label>再加一列的边际月利润</label><b class="${mg.gain>=0?'pos':'neg'}">${W(mg.gain)}</b></div>`; })()}
           ${routeQual(r)}
         </div>
@@ -720,10 +745,10 @@
         ${ui.odRoute===r.id ? odTable(r) : ''}
         ${plan && plan.ok ? `<h3>区段明细（${G.trainById[sample.model].name}）</h3><div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t"><tr><th>区段</th><th>使用轨道</th><th class="r">限速</th><th class="r">能力利用</th><th class="r">单程过轨费</th></tr>
           ${plan.legs.map(l => `<tr><td>${C[l.from].name}—${C[l.to].name}</td><td><span class="swatch" style="background:${ownerColor(l.owner)}"></span>${ownerName(l.owner)}</td><td class="num r">${Math.round(l.v)}</td><td class="num r">${utilTag(l.tr)}</td><td class="num r">${l.fee ? W(l.fee) : '<span class="pos">免</span>'}</td></tr>`).join('')}
-          </table></div><div class="muted" style="margin-top:6px">${plan.delay > 0.05 ? `<span class="neg">拥堵晚点 +${plan.delay.toFixed(1)} 小时</span> · ` : ''}单程 <span class="measure">${plan.oneWay.toFixed(1)}&nbsp;小时</span> · 旅速 <span class="measure">${plan.vavg.toFixed(0)}&nbsp;km/h</span> · 每月 <span class="measure">${plan.trips.toFixed(1)}&nbsp;个单程</span></div>` : (sample ? `<div class="hint" style="margin-top:8px">${icon('warning')} ${esc(G.econ[sample.id].plan.why)}</div>` : '')}
+          </table></div><div class="muted" style="margin-top:6px">${plan.delay > 0.05 ? `<span class="neg">拥堵晚点 +${plan.delay.toFixed(1)} 小时</span> · ` : ''}单程 <span class="measure">${plan.oneWay.toFixed(1)}&nbsp;小时</span> · 旅速 <span class="measure">${plan.vavg.toFixed(0)}&nbsp;km/h</span> · 每月 <span class="measure">${plan.trips.toFixed(1)}&nbsp;个单程</span></div>` : (plan ? `<div class="hint" style="margin-top:8px">${icon('warning')} ${esc(plan.why)}</div>` : '')}
         <div class="route-tools"><span class="muted">轨道选择</span><select data-act="routePref" data-id="${r.id}"><option value="fast" ${r.pref==='fast'?'selected':''}>自有优先 · 速度优先</option><option value="cheap" ${r.pref==='cheap'?'selected':''}>自有优先 · 费用优先</option></select>
-          <button class="btn sm" data-act="buyFor" data-id="${r.id}">为此线路购车 →</button></div>
-      </div>`;
+          <button class="btn sm" data-act="buyFor" data-id="${r.id}">为此线路购车 →</button></div>`;
+      }, 'card', ui.selRoute===r.id ? r.color : '');
     });
     return html;
   }
@@ -784,7 +809,7 @@
     let html = `<h2>车队管理</h2>
       <div class="grid3"><div class="stat"><label>列车总数</label><b>${S.trains.length}</b></div><div class="stat"><label>平均载客/载重率</label><b>${pct(lf)}</b></div><div class="stat"><label>预计月净利</label><b class="${mon>=0?'pos':'neg'}">${W(mon)}</b></div></div>`;
     if (!S.trains.length) return html + `<div class="hint" style="margin-top:10px">车队为空。前往「购车」页采购第一列车。</div>` + depotHTML();
-    const ropts = sel => `<option value="">— 未分配 —</option>` + S.routes.map(r => `<option value="${r.id}" ${sel===r.id?'selected':''}>${G.isBranch(r) ? '［支线］' : ''}${esc(r.name)}</option>`).join('');
+    const routeById = new Map(S.routes.map(r => [r.id, r]));
     const old = S.trains.filter(t => ['ended','obsolete'].includes(G.eraOf(t))), oldMain = old.filter(t => t.route && !G.trainOnBranch(t));
     if (old.length) html += `<div class="card" style="margin-top:10px;padding:8px 10px;font-size:12px"><b>车型换代</b>　车队里有 <b>${old.length}</b> 列车属于已停产或淘汰车型${oldMain.length ? `，其中 ${oldMain.length} 列仍跑干线：在干线上旧车票价打折、维修费更高` : ''}。<br><span class="dim">把旧车调到<b>支线</b>（起讫有二三线城市，或全程 200 km 以内）就没有票价折扣，维修费还能降 10%；也可以直接出售，或等同业来求购。</span>${(() => { const ss = [...new Set(old.map(t => { const s = G.successorOf(G.trainById[t.model]); return s ? s.name : ''; }).filter(Boolean))]; return ss.length ? `<br>同级别可换的新车：<b>${ss.map(esc).join('、')}</b>` : ''; })()}</div>`;
     const uo = (S.usedOffers || []).filter(o => S.trains.some(t => t.id === o.tid) && o.expire > S.day);
@@ -803,17 +828,20 @@
       else st = `<span class="tag green">运营</span>`;
       const running = t.status==='run' && e.plan.ok;
       const money = running ? W(e.monthly) : W(-G.maintOf(t,y));
-      const canOvh = G.yrsSinceOvh(t) >= 2 && t.status !== 'delivery' && t.status !== 'overhaul';
-      html += `<div class="fcard">
-        <div class="fc-top"><span class="thumb">${art(t.model, 's')}</span>
-          <div class="fc-name"><div class="row" style="gap:6px;flex-wrap:wrap"><b class="clip-name" title="${esc(t.name)}">${esc(t.name)}</b>${st}${eraTag(t)}</div><div class="dim fc-sub" title="${esc(m.name)}">${m.name}${/[（(]/.test(m.name) ? '' : ' · ' + useName[m.use]}</div></div>
-          <div class="fc-mon"><b class="num ${running ? (e.monthly>=0?'pos':'neg') : 'dim'}">${money}</b><small class="dim">${running ? '月净利' : '月维护'}</small></div></div>
+      const route = routeById.get(t.route);
+      const summary = `<span class="fc-top">
+        <span class="fc-name"><span class="fold-heading"><b class="clip-name" title="${esc(t.name)}">${esc(t.name)}</b>${st}</span>
+          <small class="dim clip-name" title="${esc(route?.name || '未分配线路')}">${esc(route?.name || '未分配线路')}</small></span>
+        <span class="fc-mon"><b class="num ${running ? (e.monthly>=0?'pos':'neg') : 'dim'}">${money}</b><small class="dim">${running ? '月净利' : '月维护'}</small></span></span>`;
+      html += foldCard('fleet', t.id, summary, () => {
+        const canOvh = G.yrsSinceOvh(t) >= 2 && t.status !== 'delivery' && t.status !== 'overhaul';
+        return `<div class="fc-art"><span class="thumb">${art(t.model, 's')}</span><div class="dim fc-sub" title="${esc(m.name)}">${esc(m.name)}${/[（(]/.test(m.name) ? '' : ' · ' + useName[m.use]}</div>${eraTag(t)}</div>
         <div class="fc-meta"><span class="dim">${consistText(t)}</span><span>${ageText(t)}</span></div>
         ${t.route && e.plan && !e.plan.ok && !['delivery','overhaul','repair'].includes(t.status) ? `<div class="neg fc-why">${icon('warning')} ${esc(e.plan.why)}</div>`:''}
-        <div class="fc-act"><select data-act="assign" data-id="${t.id}" data-lazy="fleet" title="${esc((S.routes.find(r => r.id === t.route) || {}).name || '未分配')}">${lazyOpts(ropts, t.route)}</select>
+        <div class="fc-act"><select data-act="assign" data-id="${t.id}" data-lazy="fleet" title="${esc(route?.name || '未分配')}">${lazyOpts(route)}</select>
           <div class="fc-lf" title="载客/载重率"><div class="bar ${m.use==='freight'?'g':''}"><i style="width:${Math.min(100,(e.lf||0)*100)}%"></i></div><span class="num dim">${pct(e.lf||0)}</span></div>
-          <div class="fc-btns">${G.isUnit(m)?'':`<button class="btn sm" data-act="consist" data-id="${t.id}">编组</button>`}${canOvh ? `<button class="btn sm" data-act="overhaul" data-id="${t.id}" title="费用 ${W(G.overhaulQuote(t))}元，停运 ${G.depotCover[t.id] ? 18 : 30} 天${G.depotCover[t.id] ? '（就近机务段）' : ''}">大修</button>` : ''}<button class="btn sm danger" data-act="sell" data-id="${t.id}" title="二手市场回收价 ${W(G.sellQuote(t))}元">${ui.confirm==='t'+t.id ? '确认 ' + W(G.sellQuote(t)) : '出售'}</button></div></div>
-      </div>`;
+          <div class="fc-btns">${G.isUnit(m)?'':`<button class="btn sm" data-act="consist" data-id="${t.id}">编组</button>`}${canOvh ? `<button class="btn sm" data-act="overhaul" data-id="${t.id}" title="费用 ${W(G.overhaulQuote(t))}元，停运 ${G.depotCover[t.id] ? 18 : 30} 天${G.depotCover[t.id] ? '（就近机务段）' : ''}">大修</button>` : ''}<button class="btn sm danger" data-act="sell" data-id="${t.id}" title="二手市场回收价 ${W(G.sellQuote(t))}元">${ui.confirm==='t'+t.id ? '确认 ' + W(G.sellQuote(t)) : '出售'}</button></div></div>`;
+      }, 'fcard');
     });
     html += `</div><div class="hint" style="margin-top:10px">月净利已扣除运行成本、过轨费和车辆维护费。车辆距上次大修越久，可用率越低、故障越多；大修约花费购价的 15%，停运 30 天后焕然一新。出售时按残值回收：在产车型八折，已停产七折，淘汰车型只有五折。同业有时会出更高的价钱求购旧车。</div>`;
     return html + depotHTML();
@@ -936,21 +964,22 @@
       <div class="hint" style="margin-top:8px">货主每季度发来合同邀约，90 天内有效。签约后，合同货量会加进该站对的货源；每月运量达到目标的 80% 即可拿到月度奖金，否则支付违约金（前 2 个月为筹备期，不罚款）。违约 3 次合同解除；履约率达到 75% 的合同到期另有结算奖励。商誉影响贷款额度、债券利率、合同规模和上市估值。</div>
 `;
     html += govHTML() + `<h3>合同邀约</h3>`;
-    html += offers.length ? offers.map(o => `<div class="card">
-        <div class="row sb task-heading"><b class="clip-name" title="${esc(o.shipper)}">${esc(o.shipper)}</b><span class="tag" style="background:${CARGO[o.g].color};color:#fff">${CARGO[o.g].name}</span></div>
-        <p class="task-copy">${cRoute(o)} · 约 <span class="measure">${o.d}&nbsp;km</span> · 每月 <b class="measure">${(o.tons/1e4).toFixed(1)}&nbsp;万吨</b> · <span class="measure">${o.months}&nbsp;个月</span></p>
-        <dl class="kv"><dt>月度奖金</dt><dd class="pos"><span class="measure">${W(o.mBonus)}</span></dd><dt>到期奖励</dt><dd class="pos"><span class="measure">${W(o.fBonus)}</span></dd><dt>违约金/次</dt><dd class="neg"><span class="measure">${W(o.penalty)}</span></dd><dt>邀约剩余</dt><dd>${Math.ceil(o.expire - S.day)} 天</dd></dl>
+    html += offers.length ? offers.map(o => foldCard('offer', o.id,
+      `<span class="fold-heading"><b class="clip-name" title="${esc(o.shipper)}">${esc(o.shipper)}</b><span class="tag" style="background:${CARGO[o.g].color};color:#fff">${CARGO[o.g].name}</span></span>
+        <span class="fold-meta"><span>${cRoute(o)}</span><span>月奖 ${W(o.mBonus)}</span><span>邀约剩 ${Math.ceil(o.expire - S.day)} 天</span></span>`,
+      () => `<p class="task-copy">约 <span class="measure">${o.d}&nbsp;km</span> · 每月 <b class="measure">${(o.tons/1e4).toFixed(1)}&nbsp;万吨</b> · <span class="measure">${o.months}&nbsp;个月</span></p>
+        <dl class="kv"><dt>到期奖励</dt><dd class="pos"><span class="measure">${W(o.fBonus)}</span></dd><dt>违约金/次</dt><dd class="neg"><span class="measure">${W(o.penalty)}</span></dd></dl>
         <p class="detail-copy">${cService(o)}</p>
-        <div class="row" style="justify-content:flex-end;gap:6px"><button class="btn sm" data-act="declineC" data-id="${o.id}">婉拒</button><button class="btn sm primary" data-act="acceptC" data-id="${o.id}">签约</button></div></div>`).join('')
+        <div class="row" style="justify-content:flex-end;gap:6px"><button class="btn sm" data-act="declineC" data-id="${o.id}">婉拒</button><button class="btn sm primary" data-act="acceptC" data-id="${o.id}">签约</button></div>`)).join('')
       : `<div class="dim">暂无邀约。货主每季度末发来新的邀约。</div>`;
     html += `<h3>履行中的合同</h3>`;
     html += S.contracts.length ? S.contracts.map(o => { const pi = G.pairInfo[G.contractKey(o)]; const cur = pi ? Math.min(1, pi.served / o.tons) : 0;
-      return `<div class="card">
-        <div class="row sb task-heading"><b class="clip-name" title="${esc(o.shipper)}">${esc(o.shipper)}</b><span class="dim">剩 ${o.left} 个月 · 违约 ${o.strikes}/3</span></div>
-        <div style="margin:4px 0">${cRoute(o)} · ${CARGO[o.g].name} 每月 ${(o.tons/1e4).toFixed(1)} 万吨</div>
-        <div class="region"><span>本月预计</span><div class="bar ${cur>=0.8?'g':''}"><i style="width:${cur*100}%"></i></div><span class="num r ${cur>=0.8?'pos':'neg'}">${pct(cur)}</span></div>
+      return foldCard('contract', o.id,
+        `<span class="fold-heading"><b class="clip-name" title="${esc(o.shipper)}">${esc(o.shipper)}</b><span class="tag">${CARGO[o.g].name}</span></span>
+        <span class="fold-meta"><span>${cRoute(o)}</span><span>剩 ${o.left} 个月</span><span class="${cur>=0.8?'pos':'neg'}">本月预计 ${pct(cur)}</span><span>违约 ${o.strikes}/3</span></span>`,
+        () => `<p class="task-copy">合同货量每月 ${(o.tons/1e4).toFixed(1)}&nbsp;万吨</p>
         <div class="cbars">${o.hist.slice(-24).map(h => `<i title="${h}%" style="height:${Math.max(6, Math.min(100,h))}%;background:${h>=80?'#3f8a55':'#c0392b'}"></i>`).join('')}</div>
-        <p class="detail-copy">${cService(o)}</p></div>`; }).join('')
+        <p class="detail-copy">${cService(o)}</p>`); }).join('')
       : `<div class="dim">还没有签约的合同。</div>`;
     return html + localHTML();
   }
@@ -1308,8 +1337,9 @@
       <div class="dim" style="font-size:11px;margin-top:4px">1995 年起可收购规模小于本公司净资产 60% 的同业。收购价为对方资产估值的 1.3 倍，另加每公里线路的网络溢价；对方线路并入后，你的列车免付过轨费。</div>
       <h3>同业线路</h3>
       ${S.rivals.filter(r => r.active).map(r => { const ts = S.tracks.filter(t => t.owner===r.id);
-        return `<div class="card"><div class="row"><span class="swatch" style="background:${RIVAL[r.id].color}"></span><b>${RIVAL[r.id].name}</b><span class="dim" style="margin-left:auto">${ts.length} 段</span></div>
-          ${ts.length ? `<div style="margin-top:6px;font-size:12px;line-height:1.9">${ts.map(t => `<span class="tag" style="margin:0 4px 4px 0">${C[E[t.e].a].name}—${C[E[t.e].b].name} · ${t.v}${t.status==='build'?' 在建':''}</span>`).join('')}</div>` : '<div class="dim">尚未修建线路</div>'}</div>`; }).join('')}
+        return foldCard('rival', r.id,
+          `<span class="fold-heading"><span class="swatch" style="background:${RIVAL[r.id].color}"></span><b class="clip-name">${RIVAL[r.id].name}</b><span class="tag">${ts.length} 段</span></span>`,
+          () => ts.length ? `<div style="font-size:12px;line-height:1.9">${ts.map(t => `<span class="tag" style="margin:0 4px 4px 0">${C[E[t.e].a].name}—${C[E[t.e].b].name} · ${t.v}${t.status==='build'?' 在建':''}</span>`).join('')}</div>` : '<div class="dim">尚未修建线路</div>'); }).join('')}
       <div class="hint">同业公司会在其网络周边修建新线。当它们的网络与你的自有线路相连时，会有同业列车过轨并向你付费；你的列车使用同业线路时，费率为国铁基准的 115%。</div>`;
   }
 
@@ -1324,6 +1354,13 @@
       return;
     }
     switch (a){
+      case 'toggleDetail': {
+        const { group, id } = b.dataset;
+        ui.openDetails[group] = ui.openDetails[group] === id ? null : id;
+        renderPanel(true);
+        document.getElementById(b.id)?.scrollIntoView({ block:'nearest' });
+        break;
+      }
       case 'routeFrom': startRoute(+b.dataset.c); break;
       case 'repY': ui.repY = +b.dataset.y; renderPanel(true); break;
       case 'od': { const id = +b.dataset.id; ui.odRoute = ui.odRoute === id ? null : id; renderPanel(true); break; }
@@ -1573,7 +1610,7 @@
   $('#bLoad').onclick = () => saveModal(false);
   $('#bNew').onclick = startScreen;
 
-  function afterLoad(){ if (window.Tutorial && Tutorial.active()) Tutorial.stop(false); ui.selCity = ui.selEdge = ui.selRoute = null; ui.mode = 'view'; ui.draft = []; ui.newsTop = G.S.news[0]; ui.sig = ''; renderTabs(); renderPanel(true); renderInspector(); renderRouteBar(); renderTop(); renderTicker(); popupQueue = G.popups(); }
+  function afterLoad(){ if (window.Tutorial && Tutorial.active()) Tutorial.stop(false); ui.selCity = ui.selEdge = ui.selRoute = ui.odRoute = ui.confirm = null; ui.openDetails = {}; ui.mode = 'view'; ui.draft = []; ui.newsTop = G.S.news[0]; ui.sig = ''; renderTabs(); renderPanel(true); renderInspector(); renderRouteBar(); renderTop(); renderTicker(); popupQueue = G.popups(); }
   function renderTicker(){ const S = G.S; $('#tickerItems').innerHTML = S.news.slice(0,8).map(n => `<span><b>${n.date}</b> ${esc(n.title)} — ${esc(n.text)}</span>`).join(''); }
 
   // ---------------- 主循环 ----------------
