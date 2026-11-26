@@ -2,6 +2,7 @@
   --bg:#0d1420; --bg2:#121b2a; --panel:#152033; --panel2:#1a2740; --line:#26344d; --line2:#33456a;
   --text:#e4e9f2; --text2:#9fb0c8; --text3:#6d7f99; --gold:#f2b544; --gold2:#ffd27a; --green:#4cc38a; --red:#ef6461;
   --blue:#5aa9ff; --purple:#b38cff; --cyan:#4fd1c5; --radius:10px; --shadow:0 10px 30px rgba(0,0,0,.35);
+  --gain:#ffb3a7; --loss:#a8e6b0; --finance-neutral:#8d9bb1; --finance-revenue:#72a9db; --finance-expense:#d3a65d;
   --mono: "SF Mono", Menlo, Consolas, "Roboto Mono", monospace;
 }
 *{box-sizing:border-box;touch-action:manipulation}
@@ -11,6 +12,7 @@ input,select{font:inherit;color:var(--text);background:var(--bg2);border:1px sol
 select:focus,input:focus{outline:1px solid var(--gold)}
 .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
 .pos{color:var(--green)} .neg{color:var(--red)} .muted{color:var(--text2)} .dim{color:var(--text3)} .gold{color:var(--gold)}
+.gain{color:var(--gain)} .loss{color:var(--loss)}
 .ui-symbols{position:absolute;overflow:hidden}
 .ui-icon{display:inline-block;width:1em;height:1em;vertical-align:-.14em;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
 
@@ -114,7 +116,13 @@ table.t tr:hover td{background:rgba(255,255,255,.02)}
 
 /* 地图覆盖层 */
 #maptools{position:absolute;top:12px;left:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:60%}
-#maptools .chip{background:rgba(13,20,32,.85);backdrop-filter:blur(4px)}
+#maptools .chip{display:inline-flex;align-items:center;gap:5px;min-height:32px;background:var(--panel2);color:var(--text);white-space:nowrap}
+#maptools .chip[aria-pressed=true]{background:#2f4f3a;color:#fff8e8;border-color:#2f4f3a}
+#maptools .chip:focus-visible{outline:2px solid currentColor;outline-offset:-3px}
+.layer-check{display:grid;place-items:center;width:13px;height:13px;border:1px solid currentColor;border-radius:2px;flex:none}
+.layer-check .ui-icon{width:11px;height:11px}
+[aria-pressed=false] .layer-check .ui-icon{visibility:hidden}
+.layer-label-short{display:none}
 #legend{position:absolute;bottom:48px;right:56px;background:rgba(13,20,32,.85);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:11.5px;color:var(--text2);backdrop-filter:blur(4px)}
 #legend div{display:flex;align-items:center;gap:6px;margin:2px 0}
 #legend i{display:inline-block;width:22px;height:3px;border-radius:2px}
@@ -145,6 +153,7 @@ table.t tr:hover td{background:rgba(255,255,255,.02)}
 #toast{position:fixed;right:calc(clamp(460px,31vw,540px) + 20px);top:70px;display:flex;flex-direction:column;gap:8px;z-index:40;pointer-events:none}
 .toast{background:rgba(22,34,52,.97);border:1px solid var(--line2);border-left:3px solid var(--gold);border-radius:8px;padding:8px 12px;box-shadow:var(--shadow);min-width:240px;max-width:340px;animation:tin .25s ease-out}
 .toast.bad{border-left-color:var(--red)} .toast.good{border-left-color:var(--green)}
+.toast.gain{border-left-color:var(--gain)} .toast.loss{border-left-color:var(--loss)}
 .toast b{display:block;font-size:12.5px}
 .toast span{font-size:12px;color:var(--text2)}
 @keyframes tin{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}
@@ -461,6 +470,10 @@ table.t.fin-table :is(th,td).r{width:29%}
 .fold-chevron{color:var(--text2);line-height:1}
 .fold-toggle[aria-expanded=true] .fold-chevron{transform:rotate(180deg)}
 .fold-body{border-top:1px solid var(--line);margin-top:6px;padding-top:8px}
+.route-trains{border-top:1px solid var(--line)}
+.route-train{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)}
+.route-train-info{min-inline-size:0}
+.fleet-filters{margin-top:10px}
 .route-actions{justify-content:flex-end}
 .route-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
 .route-tools select{flex:1 1 120px}
@@ -598,6 +611,19 @@ table.t.fin-table :is(th,td).r{width:29%}
   #routebar{top:54px;max-height:none;overflow:visible;padding:6px 8px}
   .rb-head .rb-toggle{min-height:36px;min-width:0}
   #routebar.open .rb-stops{max-height:min(22dvh,140px)}
+}
+
+@media (max-width:640px){
+  #maptools{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;padding:0}
+  #maptools .chip{min-height:44px;justify-content:center;gap:2px;padding:0 2px}
+  .layer-check{width:11px;height:11px}
+  .layer-check .ui-icon{width:9px;height:9px}
+  .layer-label{display:none}
+  .layer-label-short{display:inline}
+  #routebar{top:56px}
+}
+@media (max-width:340px){
+  #maptools .chip{font-size:11px;padding-inline:1px}
 }
 
 /* 换代：查看替代车型时高亮 */

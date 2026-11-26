@@ -1,6 +1,7 @@
 /* A 票根·复古国铁：八十年代车票、站牌与绿皮车 */
 :root{--bg:#e9dfc8;--bg2:#f4ecd9;--panel:#f7f0de;--panel2:#fbf6ea;--line:#cbbd9c;--line2:#a8977a;--text:#2a2a22;--text2:#5a5544;--text3:#8a8068;--gold:#b3261e;--gold2:#8e1c16;--green:#2f6b3f;--red:#b3261e;
 --mono:"Courier New","Songti SC","Noto Serif SC",monospace;
+--gain:#b3261e;--loss:#2f6b3f;--finance-neutral:#726958;--finance-revenue:#3f5f8a;--finance-expense:#8b612d;
 --m-grid:rgba(90,80,50,.08);--m-gridText:rgba(90,80,50,.4);--m-plateau:rgba(160,120,70,.14);--m-plateauLine:rgba(140,100,60,.25);--m-terrText:rgba(120,90,50,.35);--m-river:rgba(60,120,170,.45);--m-region:rgba(80,60,30,.08);--m-cand:rgba(90,80,60,.35);
 --m-state:#6b6a60;--m-stateElec:#3f5f8a;--m-stateHsr:#1d3f6e;--m-own:#b3261e;--m-city:#f7f0de;--m-cityLine:#5a5544;--m-cityLit:#b3261e;--m-cityLitLine:#5a120e;--m-halo:rgba(247,240,222,.95);--m-label:#4a4536;--m-labelLit:#8e1c16;--m-glow:rgba(179,38,30,A);--m-font:"Songti SC","Noto Serif SC",serif}
 html,body{font-family:"Songti SC","Noto Serif SC","STSong",serif}
@@ -26,7 +27,7 @@ html,body{font-family:"Songti SC","Noto Serif SC","STSong",serif}
 .tag{background:#fffaf0;border-radius:2px}.tag.gold{background:#b3261e;color:#fff;border-color:#b3261e}.tag.green{background:#2f6b3f;color:#fff;border-color:#2f6b3f}.tag.blue{background:#1d3f6e;color:#fff;border-color:#1d3f6e}.tag.red{background:#fff;color:#b3261e;border-color:#b3261e}
 .tcard .art{background:#f1e7cf;border-bottom:1px dashed var(--line2)}
 .hint{background:#fff6dd;border-color:#c9a86a}
-#legend,#inspector,#maptools .chip,#zoom button{background:rgba(251,246,234,.95)!important;color:var(--text);border-color:var(--line2)}
+#legend,#inspector,#zoom button{background:rgba(251,246,234,.95)!important;color:var(--text);border-color:var(--line2)}
 #zoom button{border-radius:2px;color:#2f4f3a;box-shadow:inset 0 0 0 2px #f4ecd9}
 #zoom button:hover,#zoom button:focus-visible{color:var(--gold2);border-color:var(--gold2)}
 #inspector{border:2px solid #2f4f3a;border-radius:2px}
@@ -41,7 +42,5 @@ html,body{font-family:"Songti SC","Noto Serif SC","STSong",serif}
 .stops .s.town{border-radius:0}
 .stops .s.pass{opacity:.55;border-style:dashed;text-decoration:line-through;text-decoration-color:rgba(0,0,0,.35)}
 .t td .btn{white-space:nowrap}
-#top .pos{color:#a8e6b0}#top .neg{color:#ffb3a7}
+#top {--gain:#ffb3a7;--loss:#a8e6b0}
 .btn.danger{color:#b3261e;border-color:#c98a84;background:#fffaf0}.btn.danger:hover{background:#b3261e;color:#fff}
-/* 性能：图层按钮底色已 95% 不透明，背景模糊看不出来却要每帧重算，关闭 */
-#maptools .chip{backdrop-filter:none}

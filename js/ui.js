@@ -14,13 +14,20 @@
   const W = G.fmtW;
   const fmtY = y => W(y) + '元';
   const NW = v => Math.abs(v||0) < 500 ? W(0) : '−' + W(v);  // 支出类：负号 + 金额，零值不带负号
+  const financialClass = value => value > 0 ? 'gain' : value < 0 ? 'loss' : '';
+  const financeColors = (() => {
+    const css = getComputedStyle(document.documentElement);
+    const read = name => css.getPropertyValue(`--${name}`).trim();
+    return { gain:read('gain'), loss:read('loss'), neutral:read('finance-neutral'), revenue:read('finance-revenue'), expense:read('finance-expense') };
+  })();
+  const financialColor = value => financeColors[financialClass(value) || 'neutral'];
   const pct = x => (x*100).toFixed(0) + '%';
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const measureText = text => esc(text).replace(
     /[+−-]?\d[\d,]*(?:\.\d+)?[ \u00a0]*(?:万人次|亿元(?:\/年)?|万元(?:\/km)?|万吨(?:\/月)?|km\/h|km|kW|公里|小时|个月|年月|年|月|日|元|列|天|次|人|吨|座|[%％])/g,
     '<span class="measure">$&</span>');
   const SPEEDS = [0, 1, 3, 7, 15];
-  const ui = { tab:'overview', speed:1, lastSpeed:1, selCity:null, selEdge:null, selRoute:null, mode:'view', draft:[], openDetails:{},
+  const ui = { tab:'overview', speed:1, lastSpeed:1, selCity:null, selEdge:null, selRoute:null, mode:'view', draft:[], openDetails:{}, idleOnly:false,
     layers:{ state:true, rivals:true, cand:true, trains:true, labels:true, flow:false, industry:false }, mf:{ use:'all', type:'all', origin:'all', show:'sale', cat:'loco', ck:'all' },
     buyRoute:null, sig:'', confirm:null, modalOpen:false, floaters:[], lastEvt:0, newsTop:null };
   const RIVAL = {}; RIVALS.forEach(r => RIVAL[r.id] = r);
@@ -64,10 +71,12 @@
   const COS = Math.cos(35 * Math.PI/180);
   const wx = lon => (lon - 104) * COS, wy = lat => -(lat - 35);
   const sx = lon => wx(lon) * view.s + view.ox, sy = lat => wy(lat) * view.s + view.oy;
+  const fitBounds = { x0:wx(86), x1:wx(128.5), y0:wy(48.5), y1:wy(21) };
+  const fitScale = (w,h) => Math.min(w / (fitBounds.x1-fitBounds.x0), (h-34) / (fitBounds.y1-fitBounds.y0)) * 0.95;
   function resize(){ const r = cv.getBoundingClientRect(); DPR = window.devicePixelRatio || 1; cv.width = r.width*DPR; cv.height = r.height*DPR; ui.mapDrawn = false; }
-  function fit(){ const r = cv.getBoundingClientRect(); const w = r.width, h = r.height - 34;
-    const x0 = wx(86), x1 = wx(128.5), y0 = wy(48.5), y1 = wy(21);
-    view.s = Math.min(w / (x1-x0), h / (y1-y0)) * 0.95; view.ox = w/2 - (x0+x1)/2*view.s; view.oy = h/2 - (y0+y1)/2*view.s; }
+  function fit(){ const { width, height } = cv.getBoundingClientRect();
+    const { x0, x1, y0, y1 } = fitBounds;
+    view.s = fitScale(width,height); view.ox = width/2 - (x0+x1)/2*view.s; view.oy = (height-34)/2 - (y0+y1)/2*view.s; }
   window.addEventListener('resize', () => { resize(); });
 
   const RIVERS = [
@@ -265,7 +274,7 @@
       ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4); ctx.fillStyle = d.pend && !d.lv ? 'rgba(120,120,120,.8)' : '#2f4f3a'; ctx.strokeStyle = '#f4e9cf'; ctx.lineWidth = 1.2;
       ctx.fillRect(-w/2, -w/2, w, w); ctx.strokeRect(-w/2, -w/2, w, w); ctx.restore(); });
     // 列车
-    if (ui.layers.trains) drawTrains(now);
+    if (ui.layers.trains) drawTrains(now, w, h);
     // 标签
     if (ui.layers.labels) cachedLayer('label', labelKey(w, h), w, h, () => drawLabels(w, h));
     // 浮动收入
@@ -290,9 +299,10 @@
     }
   }
   function drawFloaters(now){
+    if (!ui.floaters.length) return;
     ctx.font = '600 11px ' + 'Menlo, monospace';
     ui.floaters = ui.floaters.filter(f => now - f.t0 < 1600);
-    ui.floaters.forEach(f => { const k = (now - f.t0)/1600; ctx.globalAlpha = 1 - k; ctx.fillStyle = f.amt >= 0 ? '#2f6b3f' : '#b3261e'; ctx.fillText((f.amt>=0?'+':'') + (f.amt/1e4).toFixed(1) + '万', f.x + 6, f.y - 8 - k*18); });
+    ui.floaters.forEach(f => { const k = (now - f.t0)/1600; ctx.globalAlpha = 1 - k; ctx.fillStyle = financialColor(f.amt); ctx.fillText((f.amt>0?'+':'') + (f.amt/1e4).toFixed(1) + '万', f.x + 6, f.y - 8 - k*18); });
     ctx.globalAlpha = 1;
   }
   // 本公司客货流量（按区段月运量）
@@ -321,40 +331,102 @@
   function line(x1,y1,x2,y2){ ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
   function pathStops(stops){ ctx.beginPath(); stops.forEach((c,k) => k ? ctx.lineTo(sx(C[c].lon), sy(C[c].lat)) : ctx.moveTo(sx(C[c].lon), sy(C[c].lat))); ctx.stroke(); }
 
-  const trainPos = {};
-  function drawTrains(now){
-    const S = G.S; const routeById = new Map(S.routes.map(r => [r.id, r]));
-    const w = cv.width/DPR, h = cv.height/DPR;
-    S.trains.forEach(t => {
-      delete trainPos[t.id];
-      if (t.status !== 'run') return; const e = G.econ[t.id]; if (!e || !e.plan || !e.plan.ok) return;
-      const r = routeById.get(t.route); if (!r) return;
-      const p = e.plan; let legs = p.legs; if (t.dir) legs = legs.slice().reverse().map(l => Object.assign({}, l, { from:l.to, to:l.from }));
-      let tt = (t.phase||0) - 0.6; let x, y, ang = 0;
-      if (tt <= 0){ const c = C[legs[0].from]; x = sx(c.lon); y = sy(c.lat); }
-      else {
-        let done = false;
-        for (let k = 0; k < legs.length; k++){
-          const l = legs[k];
-          if (tt <= l.h){ const a = C[l.from], b = C[l.to]; const f = tt / l.h; x = sx(a.lon) + (sx(b.lon)-sx(a.lon))*f; y = sy(a.lat) + (sy(b.lat)-sy(a.lat))*f; ang = Math.atan2(sy(b.lat)-sy(a.lat), sx(b.lon)-sx(a.lon)); done = true; break; }
-          tt -= l.h;
-          if (k < legs.length-1){ if (tt <= p.dwell){ const c = C[l.to]; x = sx(c.lon); y = sy(c.lat); done = true; break; } tt -= p.dwell; }
-        }
-        if (!done){ const c = C[legs[legs.length-1].to]; x = sx(c.lon); y = sy(c.lat); }
+  const trainSprites = new Map();
+  const trainShapes = {
+    pax:[[-9,-3.4],[6,-3.4],[9,-1.8],[9,1.8],[6,3.4],[-9,3.4]],
+    freight:[[-9,-3],[-3,-3],[-3,-1.6],[-1,-1.6],[-1,-3.4],[6,-3.4],[9,-1.8],[9,1.8],[6,3.4],[-1,3.4],[-1,1.6],[-3,1.6],[-3,3],[-9,3]],
+    unit:[[-9,-3.1],[3.5,-3.1],[7,-2.3],[10,0],[7,2.3],[3.5,3.1],[-9,3.1]]
+  };
+  const trainSpriteWidth = 23, trainSpriteHeight = 11;
+  function trainSprite(kind, color){
+    const ratio = Math.max(1, Math.min(3, Math.ceil(DPR)));
+    const key = `${kind}:${color}:${ratio}`;
+    let sprite = trainSprites.get(key);
+    if (sprite) return sprite;
+    sprite = document.createElement('canvas');
+    sprite.width = trainSpriteWidth * ratio;
+    sprite.height = trainSpriteHeight * ratio;
+    const g = sprite.getContext('2d');
+    g.setTransform(ratio, 0, 0, ratio, sprite.width / 2, sprite.height / 2);
+    g.lineJoin = 'round';
+    g.beginPath();
+    trainShapes[kind].forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
+    g.closePath();
+    g.strokeStyle = '#fdf2d6'; g.lineWidth = 2.6; g.stroke();
+    g.fillStyle = '#3e342a';
+    g.fillStyle = color;
+    g.fill();
+    g.strokeStyle = '#3e342a'; g.lineWidth = 0.9; g.stroke();
+    g.fillStyle = '#f7eac9';
+    if (kind === 'freight'){
+      g.fillRect(-7.5, -1.6, 1, 3.2);
+      g.fillRect(-5.5, -1.6, 1, 3.2);
+    } else {
+      g.fillRect(-7.5, -1.1, 2.5, 2.2);
+      g.fillRect(-3.5, -1.1, 2.5, 2.2);
+      g.fillRect(0.5, -1.1, 2.5, 2.2);
+    }
+    g.fillStyle = '#292c29'; g.fillRect(5, -1.35, 2.2, 2.7);
+    g.fillStyle = '#fff2c0'; g.fillRect(8, -0.6, 1.2, 1.2);
+    trainSprites.set(key, sprite);
+    return sprite;
+  }
+
+  let trainRoutesSource, trainRoutes = new Map();
+  function drawTrains(now, w, h){
+    const S = G.S;
+    if (trainRoutesSource !== S.routes || trainRoutes.size !== S.routes.length){
+      trainRoutesSource = S.routes;
+      trainRoutes = new Map(S.routes.map(r => [r.id, r]));
+    }
+    const events = G.events, latest = events[events.length - 1];
+    const fresh = ui.speed <= 3 && latest?.at > ui.lastEvt ? events.filter(e => e.at > ui.lastEvt) : null;
+    if (latest) ui.lastEvt = latest.at;
+    const positions = fresh && new Map();
+    const scale = Math.max(0.67, Math.min(1, 0.48 + view.s/60));
+    const sw = trainSpriteWidth * scale, sh = trainSpriteHeight * scale;
+    // 全图视角下，同一小块屏幕区域只画一个车标，放大后恢复逐列显示。
+    const occupied = view.s <= fitScale(w,h)*1.02 ? new Set() : null;
+    const cellSize = Math.round(sw * 0.8);
+    const columns = Math.ceil((w + 40) / cellSize) + 3;
+    const gridX = view.ox % cellSize, gridY = view.oy % cellSize;
+    for (const t of S.trains){
+      if (t.status !== 'run') continue;
+      const plan = G.econ[t.id]?.plan, route = trainRoutes.get(t.route);
+      if (!plan?.ok || !plan.legs.length || !route) continue;
+      const legs = plan.legs, step = t.dir ? -1 : 1;
+      let i = t.dir ? legs.length - 1 : 0;
+      let leg = legs[i], time = (t.phase || 0) - 0.6;
+      // 返程从末段向前遍历，保留站停以及始发等待的位置。
+      while (time > leg.h && legs[i + step]){
+        time -= leg.h + plan.dwell;
+        if (time <= 0){ time = leg.h; break; }
+        i += step;
+        leg = legs[i];
       }
-      trainPos[t.id] = { x, y };
-      if (x < -20 || y < -20 || x > w + 20 || y > h + 20) return;
-      const m = G.trainById[t.model];
-      ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
-      const L = m.type === 'emu' ? 13 : 10;
-      ctx.fillStyle = r.color; ctx.strokeStyle = '#0b1220'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(-L/2, -3.2, L, 6.4, m.type==='emu'?3:1.5); else ctx.rect(-L/2,-3.2,L,6.4); ctx.fill(); ctx.stroke();
-      if (m.use === 'freight'){ ctx.fillStyle = '#0b1220'; ctx.fillRect(-1, -3.2, 1.4, 6.4); }
-      ctx.restore();
-    });
-    // 新事件 → 浮动文字
-    const evs = G.events; for (const ev of evs){ if (ev.at > ui.lastEvt){ const p = trainPos[ev.t]; if (p && ui.speed <= 3) ui.floaters.push({ x:p.x, y:p.y, amt:ev.amt, t0:performance.now() }); } }
-    if (evs.length) ui.lastEvt = evs[evs.length-1].at;
+      const from = C[t.dir ? leg.to : leg.from], to = C[t.dir ? leg.from : leg.to];
+      const ax = sx(from.lon), ay = sy(from.lat), dx = sx(to.lon) - ax, dy = sy(to.lat) - ay;
+      const q = Math.max(0, Math.min(1, time / leg.h));
+      const x = ax + dx*q, y = ay + dy*q;
+      if (x < -20 || y < -20 || x > w + 20 || y > h + 20) continue;
+      if (occupied){
+        const cell = Math.floor((y + 20 - gridY) / cellSize) * columns + Math.floor((x + 20 - gridX) / cellSize);
+        if (occupied.has(cell)) continue;
+        occupied.add(cell);
+      }
+      positions?.set(t.id, { x, y });
+      const model = G.trainById[t.model];
+      const sprite = trainSprite(G.isUnit(model) ? 'unit' : model.use, route.color);
+      const length = Math.hypot(dx, dy) || 1;
+      const cos = dx / length * DPR, sin = dy / length * DPR;
+      ctx.setTransform(cos, sin, -sin, cos, x*DPR, y*DPR);
+      ctx.drawImage(sprite, -sw/2, -sh/2, sw, sh);
+    }
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    if (fresh) for (const ev of fresh){
+      const p = positions.get(ev.t);
+      if (p) ui.floaters.push({ x:p.x, y:p.y, amt:ev.amt, t0:now });
+    }
   }
 
   // 地图交互
@@ -434,11 +506,11 @@
     $('#era').textContent = eraName(d.getFullYear());
     $('#coName').textContent = S.company;
     $('#coName').title = S.company;
-    $('#kCash').textContent = W(S.cash); $('#kCash').className = S.cash < 0 ? 'neg' : '';
+    $('#kCash').textContent = W(S.cash); $('#kCash').className = S.cash < 0 ? 'loss' : '';
     $('#kDebt').textContent = W(S.debt + (S.bonds || []).reduce((a, b) => a + b.amt, 0)); $('#kDebt').title = `银行借款 ${W(S.debt)}元 · 企业债 ${W((S.bonds || []).reduce((a, b) => a + b.amt, 0))}元`;
     $('#kWorth').textContent = W(G.netWorth());
     const h = S.history[S.history.length-1]; const net = h ? h.net : 0;
-    $('#kNet').textContent = (net>=0?'+':'') + W(net); $('#kNet').className = net >= 0 ? 'pos' : 'neg';
+    $('#kNet').textContent = (net>0?'+':'') + W(net); $('#kNet').className = financialClass(net);
     $('#kLit').textContent = `${Object.keys(S.lit).length} / ${C.length}`;
     document.querySelectorAll('#speed button').forEach(b => {
       const active = +b.dataset.s === ui.speed;
@@ -457,9 +529,20 @@
 
   // 地图图层开关与图例
   function renderTools(){
-    const L = ui.layers; const it = [['state','国铁线路'],['rivals','同业线路'],['cand','规划走廊'],['trains','列车'],['labels','城市名'],['flow','客货流量'],['industry','城市产业']];
-    $('#maptools').innerHTML = it.map(([k,n]) => `<button class="chip ${L[k]?'on':''}" data-layer="${k}">${n}</button>`).join('');
-    $('#maptools').querySelectorAll('button').forEach(b => b.onclick = () => { L[b.dataset.layer] = !L[b.dataset.layer]; renderTools(); });
+    const L = ui.layers;
+    const it = [['state','国铁线路','国铁'],['rivals','同业线路','同业'],['cand','规划走廊','走廊'],['trains','列车','列车'],['labels','城市名','地名'],['flow','客货流量','流量'],['industry','城市产业','产业']];
+    const tools = $('#maptools');
+    const scroll = tools.scrollLeft;
+    const focused = tools.contains(document.activeElement) ? document.activeElement.dataset.layer : null;
+    tools.innerHTML = it.map(([k,n,short]) => `<button class="chip" data-layer="${k}" aria-label="${n}" title="${n}" aria-pressed="${L[k]}"><span class="layer-check" aria-hidden="true">${icon('check')}</span><span class="layer-label">${n}</span><span class="layer-label-short">${short}</span></button>`).join('');
+    tools.scrollLeft = scroll;
+    if (focused) tools.querySelector(`[data-layer="${focused}"]`)?.focus({ preventScroll:true });
+    tools.querySelectorAll('button').forEach(b => b.onclick = () => {
+      const k = b.dataset.layer;
+      L[k] = !L[k];
+      if (k === 'trains') clearTrainFloaters();
+      renderTools();
+    });
     const extraLeg = (L.flow ? `<div><i style="background:rgba(29,94,158,.6);height:5px"></i>本公司客流</div><div><i style="background:rgba(140,82,30,.6);height:5px"></i>本公司货流</div>` : '')
       + (L.industry ? CARGO_IDS.filter(g => g !== 'general').map(g => `<div><i style="background:${CARGO[g].color};height:8px;width:8px;border-radius:50%"></i>产${CARGO[g].name}</div>`).join('') : '');
     $('#legend').innerHTML = extraLeg + `
@@ -479,7 +562,7 @@
     const fmt = o => CARGO_IDS.map(g => [g, o[g]]).filter(x => x[1] >= 1).sort((a,b) => b[1]-a[1]).slice(0,4)
       .map(([g,v]) => `<span class="tag" style="border-color:${CARGO[g].color};color:${CARGO[g].color}">${CARGO[g].name} ${v.toFixed(0)}</span>`).join(' ') || '<span class="dim">—</span>';
     return `<div class="row sb" style="margin-top:8px"><span><b>${CITY_LEVELS[lv][1]}</b>${lv < CITY_LEVELS.length-1 ? `<span class="dim">（${CITY_LEVELS[lv+1][0]} 万人升级为${CITY_LEVELS[lv+1][1]}）</span>` : ''}</span>
-      <span class="dim">铁路带动人口 ${b > 0 ? '<span class="pos">+' + (b*100).toFixed(1) + '%</span>' : '—'}${tr ? ` · 月停站 ${tr.toFixed(0)} 次` : ''}</span></div>
+      <span class="dim">铁路带动人口 ${b > 0 ? '<span class="gain">+' + (b*100).toFixed(1) + '%</span>' : '—'}${tr ? ` · 月停站 ${tr.toFixed(0)} 次` : ''}</span></div>
       <div style="margin-top:6px;font-size:12px"><span class="dim">发送货物：</span>${fmt(sd.S)}</div>
       <div style="margin-top:4px;font-size:12px"><span class="dim">到达需求：</span>${fmt(sd.D)}</div>`;
   }
@@ -639,7 +722,7 @@
       <div class="newslist">${S.news.slice(0,14).map(n => `<div class="n ${n.kind}"><span class="d">${n.date}</span><b>${esc(n.title)}</b><div class="muted">${measureText(n.text)}</div></div>`).join('')}</div>`;
   }
   function drawMiniChart(){ const c = $('#miniChart'); if (!c) return; const H = G.S.history.slice(-60);
-    chart(c, H.map(h => `${h.y}.${h.m}`), [{ name:'净资产', color:P.own, data:H.map(h => h.worth), fill:true }]); }
+    chart(c, H.map(h => `${h.y}.${h.m}`), [{ color:financeColors.neutral, data:H.map(h => h.worth), movement:true, fill:true }]); }
 
   function signalHTML(tr){ const cur = G.sigOf(tr); const u = G.trackUtil[tr.id];
     return `<h3>信号与通过能力</h3><div class="card"><dl class="kv"><dt>当前信号</dt><dd>${G.SIGNALS[cur].name}${tr.sigUpg ? ` <span class="tag blue">改造中 · ${Math.max(0,Math.ceil((tr.sigUpg.done-G.S.day)/30))}个月</span>` : ''}</dd>
@@ -723,13 +806,14 @@
       const lf = run.length ? run.reduce((a,t) => a + G.econ[t.id].lf, 0) / run.length : 0;
       const monthly = run.reduce((a,t) => a + G.econ[t.id].monthly, 0);
       const summary = `<span class="fold-heading"><span class="swatch" style="background:${esc(r.color)}"></span><b class="clip-name" title="${esc(r.name)}">${esc(r.name)}</b>${G.isBranch(r) ? '<span class="tag" title="起讫有二三线城市或全程 200 km 以内：适合安排旧型车，旧车不打折、维修更省">支线</span>' : ''}</span>
-        <span class="fold-meta"><span>${dist}&nbsp;km</span><span>列车 ${run.length}/${trains.length}</span><span>平均载客/载重 ${pct(lf)}</span><span class="${monthly>=0?'pos':'neg'}">预计月净利 ${W(monthly)}</span></span>`;
+        <span class="fold-meta"><span>${dist}&nbsp;km</span><span>列车 ${run.length}/${trains.length}</span><span>平均载客/载重 ${pct(lf)}</span><span class="${financialClass(monthly)}">预计月净利 ${W(monthly)}</span></span>`;
       html += foldCard('routes', r.id, summary, () => {
         // 区段产权以首列运营车辆为准，没有运营车辆时用首列已分配车辆。
         const sample = run[0] || trains[0];
         const plan = G.econ[sample?.id]?.plan;
         return `<div class="row route-actions"><button class="btn sm" data-act="selRoute" data-id="${r.id}">${ui.selRoute===r.id?'取消高亮':'地图高亮'}</button>
           <button class="btn sm danger" data-act="delRoute" data-id="${r.id}">${ui.confirm==='r'+r.id?'确认删除?':'删除'}</button></div>
+        ${routeTrainsHTML(trains)}
         <div class="stops" style="margin:8px 0">${(() => { const st = G.stopFlags(r); return r.stops.map((c,k) => { const town = C[c].tier > 1, lv = G.stationLv(c); const mid = k > 0 && k < r.stops.length-1;
           const cls = st[k] ? 's' : 's pass'; const tip = !town ? '大城市车站' : lv < 1 ? '未开设车站，列车通过' : mid ? (st[k] ? '停靠（点击改为通过）' : '通过（点击改为停靠）') : '始发/终到站';
           return (k?`<span class="arr">${icon('next')}</span>`:'') + `<span class="${cls}${town?' town':''}" title="${tip}" ${town && lv >= 1 && mid ? `data-act="skip" data-id="${r.id}" data-c="${c}" style="cursor:pointer"` : ''}>${C[c].name}</span>`; }).join(''); })()}</div>
@@ -737,7 +821,7 @@
         <div class="grid3">
           <div class="stat"><label>上月收入</label><b>${W(r.lastRev||0)}</b></div>
           <div class="stat"><label>上月运行+过轨</label><b>${W(r.lastCost||0)}</b></div>
-          ${(() => { const mg = run.length ? G.marginalOf(r.id) : null; if (!mg) return ''; return `<div class="stat" title="在这条线再加一列 ${G.trainById[mg.model].name}（同编组）后，全公司预计月净利的变化。新车自身约 ${W(mg.own)}；区段拥堵时会挤占已有列车的班次。"><label>再加一列的边际月利润</label><b class="${mg.gain>=0?'pos':'neg'}">${W(mg.gain)}</b></div>`; })()}
+          ${(() => { const mg = run.length ? G.marginalOf(r.id) : null; if (!mg) return ''; return `<div class="stat" title="在这条线再加一列 ${G.trainById[mg.model].name}（同编组）后，全公司预计月净利的变化。新车自身约 ${W(mg.own)}；区段拥堵时会挤占已有列车的班次。"><label>再加一列的边际月利润</label><b class="${financialClass(mg.gain)}">${W(mg.gain)}</b></div>`; })()}
           ${routeQual(r)}
         </div>
         ${svcRow(r)}
@@ -782,6 +866,33 @@
       <label class="row" style="margin-top:6px;font-size:12px;gap:6px"><input type="checkbox" data-act="slow" data-id="${r.id}" ${r.slow?'checked':''}> 公益慢车：全部已开站的小站停车，票价 65 折，领取地方补贴</label>`; }
 
   // —— 车队 ——
+  function isIdleTrain(t){ return t.status === 'idle' && !t.route; }
+  function trainStatus(t, plan){
+    const day = G.S.day;
+    if (t.status === 'delivery') return `<span class="tag blue">交付中 ${Math.max(0, Math.ceil(t.arrive - day))}天</span>`;
+    if (t.status === 'overhaul') return `<span class="tag blue">大修中 ${Math.max(0, Math.ceil(t.ovhDone - day))}天</span>`;
+    if (t.status === 'repair') return `<span class="tag red">故障临修 ${Math.max(0, Math.ceil(t.ovhDone - day))}天</span>`;
+    if (!t.route) return '<span class="tag">闲置</span>';
+    if (t.status !== 'run' || !plan?.ok) return '<span class="tag red">停运</span>';
+    return '<span class="tag green">运营</span>';
+  }
+  function canWithdrawTrain(t){ return t.status === 'run' && !!t.route; }
+  function withdrawTrainButton(t){
+    return canWithdrawTrain(t) ? `<button class="btn sm" data-act="withdrawTrain" data-id="${t.id}" aria-label="${esc(t.name)} 下线备用">下线备用</button>` : '';
+  }
+  function routeTrainsHTML(trains){
+    const title = '<h3>配属列车</h3>';
+    if (!trains.length) return title + '<div class="dim">这条线路还没有配属列车，可在车队中调入车辆。</div>';
+    return title + `<div class="route-trains">${trains.map(t => {
+      const model = G.trainById[t.model].name;
+      return `<div class="route-train">
+        <div class="route-train-info"><div class="fold-heading"><b class="clip-name" title="${esc(t.name)}">${esc(t.name)}</b>${trainStatus(t, G.econ[t.id]?.plan)}</div>
+          <div class="dim clip-name" title="${esc(model)}">${esc(model)}</div></div>
+        ${withdrawTrainButton(t)}
+      </div>`;
+    }).join('')}</div>`;
+  }
+
   // —— 机务段 ——
   function depotBox(c){ const S = G.S, d = G.depotsOf().find(x => x.ci === c.i), L = G.DEPOT_LV;
     if (d) { const nx = d.lv < 2 && !d.pend ? G.depotQuote(c.i, 2) : null;
@@ -807,40 +918,42 @@
     const lf = run.length ? run.reduce((a,t) => a + G.econ[t.id].lf, 0)/run.length : 0;
     const mon = run.reduce((a,t) => a + G.econ[t.id].monthly, 0);
     let html = `<h2>车队管理</h2>
-      <div class="grid3"><div class="stat"><label>列车总数</label><b>${S.trains.length}</b></div><div class="stat"><label>平均载客/载重率</label><b>${pct(lf)}</b></div><div class="stat"><label>预计月净利</label><b class="${mon>=0?'pos':'neg'}">${W(mon)}</b></div></div>`;
+      <div class="grid3"><div class="stat"><label>列车总数</label><b>${S.trains.length}</b></div><div class="stat"><label>平均载客/载重率</label><b>${pct(lf)}</b></div><div class="stat"><label>预计月净利</label><b class="${financialClass(mon)}">${W(mon)}</b></div></div>`;
     if (!S.trains.length) return html + `<div class="hint" style="margin-top:10px">车队为空。前往「购车」页采购第一列车。</div>` + depotHTML();
+    const idle = S.trains.filter(isIdleTrain);
+    const list = ui.idleOnly ? idle : S.trains;
+    html += `<div class="filters fleet-filters" role="group" aria-label="车队筛选">
+      <button class="chip ${ui.idleOnly?'':'on'}" data-act="fleetFilter" data-v="all" aria-pressed="${!ui.idleOnly}">全部 ${S.trains.length}</button>
+      <button class="chip ${ui.idleOnly?'on':''}" data-act="fleetFilter" data-v="idle" aria-pressed="${ui.idleOnly}">闲置 ${idle.length}</button>
+    </div>`;
+    if (!list.length) return html + `<div class="dim">暂无闲置列车。可在线路或车队中将运营车辆下线备用。</div>`;
     const routeById = new Map(S.routes.map(r => [r.id, r]));
-    const old = S.trains.filter(t => ['ended','obsolete'].includes(G.eraOf(t))), oldMain = old.filter(t => t.route && !G.trainOnBranch(t));
+    const old = ui.idleOnly ? [] : S.trains.filter(t => ['ended','obsolete'].includes(G.eraOf(t))), oldMain = old.filter(t => t.route && !G.trainOnBranch(t));
     if (old.length) html += `<div class="card" style="margin-top:10px;padding:8px 10px;font-size:12px"><b>车型换代</b>　车队里有 <b>${old.length}</b> 列车属于已停产或淘汰车型${oldMain.length ? `，其中 ${oldMain.length} 列仍跑干线：在干线上旧车票价打折、维修费更高` : ''}。<br><span class="dim">把旧车调到<b>支线</b>（起讫有二三线城市，或全程 200 km 以内）就没有票价折扣，维修费还能降 10%；也可以直接出售，或等同业来求购。</span>${(() => { const ss = [...new Set(old.map(t => { const s = G.successorOf(G.trainById[t.model]); return s ? s.name : ''; }).filter(Boolean))]; return ss.length ? `<br>同级别可换的新车：<b>${ss.map(esc).join('、')}</b>` : ''; })()}</div>`;
-    const uo = (S.usedOffers || []).filter(o => S.trains.some(t => t.id === o.tid) && o.expire > S.day);
+    const uo = ui.idleOnly ? [] : (S.usedOffers || []).filter(o => S.trains.some(t => t.id === o.tid) && o.expire > S.day);
     if (uo.length) html += `<h3>同业求购</h3>${uo.map(o => { const t = S.trains.find(x => x.id === o.tid), q = G.sellQuote(t), rv = (G.RIVALS||RIVALS).find(x => x.id === o.rid);
       return `<div class="card" style="padding:8px 10px"><div class="row sb" style="flex-wrap:wrap;gap:6px"><span><b>${esc(rv ? rv.name : '同业')}</b> 求购 <b>${esc(t.name)}</b> <span class="dim">${G.trainById[t.model].name}</span></span><span class="num gold">${W(o.price)}</span></div>
         <div class="row sb" style="margin-top:6px;font-size:12px;flex-wrap:wrap;gap:6px"><span class="dim">二手市场回收价 ${W(q)}，${o.price >= q ? '多卖 ' + W(o.price - q) : '少 ' + W(q - o.price)} · 还剩 ${Math.max(0, Math.ceil((o.expire - S.day)))} 天</span><span><button class="btn sm" data-act="declineUsed" data-id="${o.id}">婉拒</button> <button class="btn sm primary" data-act="acceptUsed" data-id="${o.id}">成交</button></span></div></div>`; }).join('')}`;
     html += `<div class="flist">`;
-    S.trains.forEach(t => {
+    list.forEach(t => {
       const m = G.trainById[t.model]; const e = G.econ[t.id] || { plan:{ ok:false, why:'计划未生成' }, lf:0, monthly:0 };
-      let st;
-      if (t.status === 'delivery') st = `<span class="tag blue">交付中 ${Math.max(0,Math.ceil(t.arrive - S.day))}天</span>`;
-      else if (t.status === 'overhaul') st = `<span class="tag blue">大修中 ${Math.max(0,Math.ceil(t.ovhDone - S.day))}天</span>`;
-      else if (t.status === 'repair') st = `<span class="tag red">故障临修 ${Math.max(0,Math.ceil(t.ovhDone - S.day))}天</span>`;
-      else if (!t.route) st = `<span class="tag">闲置</span>`;
-      else if (!e.plan.ok) st = `<span class="tag red">停运</span>`;
-      else st = `<span class="tag green">运营</span>`;
+      const st = trainStatus(t, e.plan);
       const running = t.status==='run' && e.plan.ok;
       const money = running ? W(e.monthly) : W(-G.maintOf(t,y));
       const route = routeById.get(t.route);
       const summary = `<span class="fc-top">
         <span class="fc-name"><span class="fold-heading"><b class="clip-name" title="${esc(t.name)}">${esc(t.name)}</b>${st}</span>
           <small class="dim clip-name" title="${esc(route?.name || '未分配线路')}">${esc(route?.name || '未分配线路')}</small></span>
-        <span class="fc-mon"><b class="num ${running ? (e.monthly>=0?'pos':'neg') : 'dim'}">${money}</b><small class="dim">${running ? '月净利' : '月维护'}</small></span></span>`;
+        <span class="fc-mon"><b class="num ${running ? financialClass(e.monthly) : 'dim'}">${money}</b><small class="dim">${running ? '月净利' : '月维护'}</small></span></span>`;
       html += foldCard('fleet', t.id, summary, () => {
         const canOvh = G.yrsSinceOvh(t) >= 2 && t.status !== 'delivery' && t.status !== 'overhaul';
         return `<div class="fc-art"><span class="thumb">${art(t.model, 's')}</span><div class="dim fc-sub" title="${esc(m.name)}">${esc(m.name)}${/[（(]/.test(m.name) ? '' : ' · ' + useName[m.use]}</div>${eraTag(t)}</div>
         <div class="fc-meta"><span class="dim">${consistText(t)}</span><span>${ageText(t)}</span></div>
         ${t.route && e.plan && !e.plan.ok && !['delivery','overhaul','repair'].includes(t.status) ? `<div class="neg fc-why">${icon('warning')} ${esc(e.plan.why)}</div>`:''}
-        <div class="fc-act"><select data-act="assign" data-id="${t.id}" data-lazy="fleet" title="${esc(route?.name || '未分配')}">${lazyOpts(route)}</select>
+        <div class="fc-act">${isIdleTrain(t) ? `<label class="muted" for="fleet-assign-${t.id}">选择线路上线</label>` : ''}
+          <select id="fleet-assign-${t.id}" data-act="assign" data-id="${t.id}" data-lazy="fleet" aria-label="${isIdleTrain(t) ? '选择线路上线' : '分配线路'}" title="${esc(route?.name || '未分配')}">${lazyOpts(route)}</select>
           <div class="fc-lf" title="载客/载重率"><div class="bar ${m.use==='freight'?'g':''}"><i style="width:${Math.min(100,(e.lf||0)*100)}%"></i></div><span class="num dim">${pct(e.lf||0)}</span></div>
-          <div class="fc-btns">${G.isUnit(m)?'':`<button class="btn sm" data-act="consist" data-id="${t.id}">编组</button>`}${canOvh ? `<button class="btn sm" data-act="overhaul" data-id="${t.id}" title="费用 ${W(G.overhaulQuote(t))}元，停运 ${G.depotCover[t.id] ? 18 : 30} 天${G.depotCover[t.id] ? '（就近机务段）' : ''}">大修</button>` : ''}<button class="btn sm danger" data-act="sell" data-id="${t.id}" title="二手市场回收价 ${W(G.sellQuote(t))}元">${ui.confirm==='t'+t.id ? '确认 ' + W(G.sellQuote(t)) : '出售'}</button></div></div>`;
+          <div class="fc-btns">${withdrawTrainButton(t)}${G.isUnit(m)?'':`<button class="btn sm" data-act="consist" data-id="${t.id}">编组</button>`}${canOvh ? `<button class="btn sm" data-act="overhaul" data-id="${t.id}" title="费用 ${W(G.overhaulQuote(t))}元，停运 ${G.depotCover[t.id] ? 18 : 30} 天${G.depotCover[t.id] ? '（就近机务段）' : ''}">大修</button>` : ''}<button class="btn sm danger" data-act="sell" data-id="${t.id}" title="二手市场回收价 ${W(G.sellQuote(t))}元">${ui.confirm==='t'+t.id ? '确认 ' + W(G.sellQuote(t)) : '出售'}</button></div></div>`;
       }, 'fcard');
     });
     html += `</div><div class="hint" style="margin-top:10px">月净利已扣除运行成本、过轨费和车辆维护费。车辆距上次大修越久，可用率越低、故障越多；大修约花费购价的 15%，停运 30 天后焕然一新。出售时按残值回收：在产车型八折，已停产七折，淘汰车型只有五折。同业有时会出更高的价钱求购旧车。</div>`;
@@ -885,7 +998,7 @@
     const S = G.S; const y = G.ym(S.day).y; const h = S.history[S.history.length-1] || {};
     const lit = Object.keys(S.lit).map(Number).sort((a,b) => (G.cityPax[b]||0) - (G.cityPax[a]||0));
     let html = `<h2>车站商业与沿线地产</h2>
-      <div class="grid3"><div class="stat"><label>上月商业收入</label><b class="pos">${W(h.biz||0)}</b></div><div class="stat"><label>上月地产租金</label><b class="pos">${W(h.rent||0)}</b></div><div class="stat"><label>土地市值</label><b class="gold">${W(G.landValue())}</b></div></div>
+      <div class="grid3"><div class="stat"><label>上月商业收入</label><b class="${financialClass(h.biz)}">${W(h.biz||0)}</b></div><div class="stat"><label>上月地产租金</label><b class="${financialClass(h.rent)}">${W(h.rent||0)}</b></div><div class="stat"><label>土地市值</label><b class="gold">${W(G.landValue())}</b></div></div>
       <h3>车站商业</h3><div class="hint" style="margin-bottom:8px">在本公司列车停靠的车站开设商铺、投放广告。收入取决于该站旅客量、城市人口和旅客满意度。</div>`;
     if (!lit.length) html += `<div class="dim">还没有开通列车服务的车站。</div>`;
     else html += `<div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t"><tr><th>车站</th><th class="r">月旅客</th><th>现有商业</th><th class="r">月收入</th><th></th></tr>${lit.slice(0, 30).map(ci => { const lv = G.shopLv(ci); const nx = lv + 1 < G.SHOP_LV.length ? G.shopQuote(ci, lv + 1) : null;
@@ -893,7 +1006,7 @@
         <td>${nx ? `<button class="btn sm" data-act="shop" data-c="${ci}" data-v="${lv+1}" ${nx.why ? 'disabled' : ''} title="${nx.why || G.SHOP_LV[lv+1].name}">${nx.why ? nx.why : (lv ? '升级' : '开设') + ' ' + W(nx.cost)}</button>` : ''}</td></tr>`; }).join('')}</table></div>`;
     html += `<h3>沿线地产</h3><div class="hint" style="margin-bottom:8px">${y < 1988 ? '1988 年起土地使用权才可以有偿转让。' : '提前在规划线路的站前买地，通车后地价上涨 25%，之后每年再涨约 4%。2000 年后全国地价进入快速上涨期。持有期间可以收取租金。也可以在地图上点击城市直接买地。'}</div>`;
     const own = Object.entries(S.land||{}).filter(([c,L]) => L.n);
-    if (own.length) html += `<div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t"><tr><th>城市</th><th class="r">块数</th><th class="r mhide">成本</th><th class="r">市值</th><th class="r">浮盈</th><th></th></tr>${own.map(([c,L]) => { const v = L.n * G.landPrice(+c); return `<tr><td><b>${C[c].name}</b>${S.lit[c] ? ' <span class="tag green">通车</span>' : ''}</td><td class="num r">${L.n}</td><td class="num r mhide">${W(L.cost)}</td><td class="num r">${W(v)}</td><td class="num r ${v>=L.cost?'pos':'neg'}">${W(v - L.cost)}</td><td class="r"><div class="tbtns"><button class="btn sm" data-act="land" data-c="${c}">加购</button><button class="btn sm" data-act="sellLand" data-c="${c}">卖一块</button></div></td></tr>`; }).join('')}</table></div>`;
+    if (own.length) html += `<div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t"><tr><th>城市</th><th class="r">块数</th><th class="r mhide">成本</th><th class="r">市值</th><th class="r">浮盈</th><th></th></tr>${own.map(([c,L]) => { const v = L.n * G.landPrice(+c); return `<tr><td><b>${C[c].name}</b>${S.lit[c] ? ' <span class="tag green">通车</span>' : ''}</td><td class="num r">${L.n}</td><td class="num r mhide">${W(L.cost)}</td><td class="num r">${W(v)}</td><td class="num r ${financialClass(v - L.cost)}">${W(v - L.cost)}</td><td class="r"><div class="tbtns"><button class="btn sm" data-act="land" data-c="${c}">加购</button><button class="btn sm" data-act="sellLand" data-c="${c}">卖一块</button></div></td></tr>`; }).join('')}</table></div>`;
     if (y >= 1988) { const cand = C.filter(c => !S.lit[c.i]).map(c => ({ c, p:G.landPrice(c.i), near: G.adj[c.i].some(e => S.tracks.some(t => t.e === e.i && t.owner === 'P')) || G.adj[c.i].some(e => G.adj[e.a === c.i ? e.b : e.a].length && S.lit[e.a === c.i ? e.b : e.a]) }))
         .filter(x => x.near).sort((a,b) => G.popOf(b.c,y) - G.popOf(a.c,y)).slice(0, 12);
       if (cand.length) html += `<h3>尚未通车的邻近城市（适合提前买地）</h3><div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t">${cand.map(x => `<tr><td><b>${x.c.name}</b> <span class="dim">${Math.round(G.popOf(x.c,y))} 万人</span></td><td class="num r">${W(x.p)}/块</td><td><button class="btn sm" data-act="land" data-c="${x.c.i}">买地</button></td></tr>`).join('')}</table></div>`; }
@@ -919,7 +1032,7 @@
   function govCard(g, inModal){
     const S = G.S, D = G.GOV[g.k], unit = D.unit, f = v => (v/1e4).toFixed(1);
     const head = `<div class="row sb task-heading"><b class="clip-name" title="${esc(g.title)}">${esc(g.title)}</b><span class="tag ${g.k==='relief'?'red':g.k==='coal'?'':'blue'}">${D.name}</span></div>`;
-    const kv = `<dl class="kv"><dt>考核口径</dt><dd>${govWhere(g)}</dd><dt>执行期</dt><dd><span class="measure">${G.mkStr(g.from)}</span> – <span class="measure">${G.mkStr(g.to)}</span></dd><dt>累计目标</dt><dd class="num">${f(g.target)} ${unit}</dd><dt>完成奖励</dt><dd class="pos"><span class="measure">${W(g.cash)}元</span> · <span class="measure">商誉 +${D.rep}</span></dd><dt>基本完成（≥85%）</dt><dd>奖励的 40%</dd><dt>未完成</dt><dd class="neg">商誉 −${D.fail}</dd></dl>`;
+    const kv = `<dl class="kv"><dt>考核口径</dt><dd>${govWhere(g)}</dd><dt>执行期</dt><dd><span class="measure">${G.mkStr(g.from)}</span> – <span class="measure">${G.mkStr(g.to)}</span></dd><dt>累计目标</dt><dd class="num">${f(g.target)} ${unit}</dd><dt>完成奖励</dt><dd class="gain"><span class="measure">${W(g.cash)}元</span> · <span class="measure">商誉 +${D.rep}</span></dd><dt>基本完成（≥85%）</dt><dd>奖励的 40%</dd><dt>未完成</dt><dd class="neg">商誉 −${D.fail}</dd></dl>`;
     if (g.st === 'offer') return `<div class="card gov">${head}<p class="task-copy">${esc(g.text)}</p>${kv}
       <div class="row sb" style="margin-top:6px"><span class="dim" style="font-size:12px">${g.k==='relief' ? '婉拒将损失商誉 1 点 · ' : ''}剩 ${Math.max(0, Math.ceil(g.expire - S.day))} 天答复</span>
       <span class="row" style="gap:6px"><button class="btn sm" ${inModal?'data-m':'data-act'}="govDec" data-id="${g.id}">婉拒</button><button class="btn sm primary" ${inModal?'data-m':'data-act'}="govAcc" data-id="${g.id}">接受任务</button></span></div></div>`;
@@ -955,20 +1068,21 @@
     const S = G.S; G.ensureT2();
     const offers = S.offers.filter(o => o.expire > S.day);
     const cap = 4 + Math.floor(S.rep / 25);
+    const contractNet = S.history.slice(-12).reduce((a,h)=>a+(h.contract||0),0);
     let html = `<h2>运输合同</h2>
       <div class="grid3">
         <div class="stat"><label>商誉</label><b class="gold">${Math.round(S.rep)}</b><small> / 100</small> ${repTag()}</div>
         <div class="stat"><label>履行中 / 上限</label><b>${S.contracts.length} / ${cap}</b></div>
-        <div class="stat"><label>近 12 月合同奖罚</label><b class="${S.history.slice(-12).reduce((a,h)=>a+(h.contract||0),0)>=0?'pos':'neg'}">${W(S.history.slice(-12).reduce((a,h)=>a+(h.contract||0),0))}</b></div>
+        <div class="stat"><label>近 12 月合同奖罚</label><b class="${financialClass(contractNet)}">${W(contractNet)}</b></div>
       </div>
       <div class="hint" style="margin-top:8px">货主每季度发来合同邀约，90 天内有效。签约后，合同货量会加进该站对的货源；每月运量达到目标的 80% 即可拿到月度奖金，否则支付违约金（前 2 个月为筹备期，不罚款）。违约 3 次合同解除；履约率达到 75% 的合同到期另有结算奖励。商誉影响贷款额度、债券利率、合同规模和上市估值。</div>
 `;
     html += govHTML() + `<h3>合同邀约</h3>`;
     html += offers.length ? offers.map(o => foldCard('offer', o.id,
       `<span class="fold-heading"><b class="clip-name" title="${esc(o.shipper)}">${esc(o.shipper)}</b><span class="tag" style="background:${CARGO[o.g].color};color:#fff">${CARGO[o.g].name}</span></span>
-        <span class="fold-meta"><span>${cRoute(o)}</span><span>月奖 ${W(o.mBonus)}</span><span>邀约剩 ${Math.ceil(o.expire - S.day)} 天</span></span>`,
+        <span class="fold-meta"><span>${cRoute(o)}</span><span class="gain">月奖 ${W(o.mBonus)}</span><span>邀约剩 ${Math.ceil(o.expire - S.day)} 天</span></span>`,
       () => `<p class="task-copy">约 <span class="measure">${o.d}&nbsp;km</span> · 每月 <b class="measure">${(o.tons/1e4).toFixed(1)}&nbsp;万吨</b> · <span class="measure">${o.months}&nbsp;个月</span></p>
-        <dl class="kv"><dt>到期奖励</dt><dd class="pos"><span class="measure">${W(o.fBonus)}</span></dd><dt>违约金/次</dt><dd class="neg"><span class="measure">${W(o.penalty)}</span></dd></dl>
+        <dl class="kv"><dt>到期奖励</dt><dd class="gain"><span class="measure">${W(o.fBonus)}</span></dd><dt>违约金/次</dt><dd class="loss"><span class="measure">${W(o.penalty)}</span></dd></dl>
         <p class="detail-copy">${cService(o)}</p>
         <div class="row" style="justify-content:flex-end;gap:6px"><button class="btn sm" data-act="declineC" data-id="${o.id}">婉拒</button><button class="btn sm primary" data-act="acceptC" data-id="${o.id}">签约</button></div>`)).join('')
       : `<div class="dim">暂无邀约。货主每季度末发来新的邀约。</div>`;
@@ -998,10 +1112,12 @@
       h += `<div>公司尚未上市。上市可一次募集大笔资金，之后可增发、分红和回购。</div>
         <p class="detail-copy">${c.ok ? `<span class="pos">已满足上市条件</span>，按当前估值发行 25% 股份，预计募集约 ${fmtY(G.valuation()*0.25*0.88*0.97)}。` : '上市条件：' + c.why.map(x => `<span class="neg">${x}</span>`).join('；')}</p>
         <button class="btn sm ${c.ok?'primary':''}" data-act="ipo" ${c.ok?'':'disabled'}>申请上市</button>`; }
-    else { const I = S.ipo; const q = G.secondaryQuote(); const chg = I.hist.length > 13 ? I.price / I.hist[I.hist.length-13].p - 1 : 0;
-      h += `<div class="grid3"><div class="stat"><label>股价</label><b class="gold">${I.price.toFixed(2)}</b><small> 元 <span class="${chg>=0?'pos':'neg'}">${chg>=0?'+':''}${(chg*100).toFixed(0)}%/年</span></small></div>
+    else { const I = S.ipo; const q = G.secondaryQuote();
+      const chg = I.hist.length > 13 ? Number(((I.price / I.hist[I.hist.length-13].p - 1) * 100).toFixed(0)) : 0;
+      h += `<div class="grid3"><div class="stat"><label>股价</label><b class="gold">${I.price.toFixed(2)}</b><small> 元 <span class="${financialClass(chg)}">${chg>0?'+':''}${chg}%/年</span></small></div>
         <div class="stat"><label>总市值</label><b>${W(G.marketCap())}</b></div><div class="stat"><label>市盈率</label><b>${G.ttmProfit() > 0 ? (G.marketCap()/G.ttmProfit()).toFixed(1) : '—'}</b></div></div>
         <canvas class="chart" id="stockChart" style="height:120px"></canvas>
+        <div class="legendrow"><span><i style="background:var(--gain)"></i>上涨</span><span><i style="background:var(--loss)"></i>下跌</span></div>
         <dl class="kv"><dt>总股本</dt><dd>${(I.shares/1e4).toFixed(0)} 万股</dd><dt>公众持股</dt><dd>${pct(I.pub/I.shares)}</dd><dt>发行价</dt><dd>${I.ipoPrice.toFixed(2)} 元</dd><dt>市场情绪</dt><dd>${(MARKET_SENT[y]||1) >= 1.2 ? '火热' : (MARKET_SENT[y]||1) <= 0.85 ? '低迷' : '平稳'}</dd></dl>
         <div class="row" style="margin:8px 0;gap:6px;align-items:center"><span>分红率</span>${['不分红','20%','40%'].map((n,i) => `<button class="btn sm ${I.payoutLv===i?'primary':''}" data-act="payout" data-v="${i}">${n}</button>`).join('')}</div>
         <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm" data-act="secondary" ${q.wait>0?'disabled':''}>增发 10%（约 ${W(q.raise)}）${q.wait>0?` · ${Math.ceil(q.wait/30)} 个月后`:''}</button><button class="btn sm" data-act="buyback">回购 2%</button></div>
@@ -1009,7 +1125,7 @@
     return h + `</div>`;
   }
   function drawStockChart(){ const c = $('#stockChart'); if (!c || !G.S.ipo) return; const H = G.S.ipo.hist.slice(-120);
-    chart(c, H.map(h => { const t = G.ym(h.d); return `${t.y}.${t.m}`; }), [{ name:'股价', color:'#b3261e', data:H.map(h => h.p), fill:true }], v => v.toFixed(1)); }
+    chart(c, H.map(h => { const t = G.ym(h.d); return `${t.y}.${t.m}`; }), [{ color:financeColors.neutral, data:H.map(h => h.p), movement:true, fill:true }], v => v.toFixed(1)); }
 
   // —— 购车 ——
   function pMarket(){
@@ -1148,30 +1264,35 @@
     const tot = Math.max(1, r.tons); const cg = CARGO_IDS.map(g => [g, (r.cargo||{})[g]||0]).filter(x => x[1] > 0).sort((a,b) => b[1]-a[1]);
     return `<div class="stamp">${r.y} 年度报告</div><h1 class="named-heading"><span class="clip-name" title="${esc(G.S.company)}">${esc(G.S.company)}</span> <span class="measure">${r.y}&nbsp;年报</span></h1>
       <div class="grid3">
-        <div class="stat"><label>全年营收</label><b>${W(r.rev)}</b></div><div class="stat"><label>净利润</label><b class="${r.net>=0?'pos':'neg'}">${W(r.net)}</b></div><div class="stat"><label>年末净资产</label><b class="gold">${W(r.worth)}</b></div>
+        <div class="stat"><label>全年营收</label><b>${W(r.rev)}</b></div><div class="stat"><label>净利润</label><b class="${financialClass(r.net)}">${W(r.net)}</b></div><div class="stat"><label>年末净资产</label><b class="gold">${W(r.worth)}</b></div>
         <div class="stat"><label>旅客发送</label><b>${(r.paxN/1e4).toFixed(0)}</b><small>&nbsp;万人次</small></div><div class="stat"><label>货物发送</label><b>${(r.tons/1e4).toFixed(0)}</b><small>&nbsp;万吨</small></div><div class="stat"><label>点亮城市</label><b>${r.lit}</b></div>
       </div>
       <h3>市场份额（占全国铁路）</h3>
       <dl class="kv"><dt>客运</dt><dd>${(r.paxShare*100).toFixed(2)}%</dd><dt>货运</dt><dd>${(r.tonShare*100).toFixed(2)}%</dd><dt>自有线路</dt><dd>${r.km.toLocaleString()} km</dd><dt>列车</dt><dd>${r.trains} 列</dd>${r.rep !== undefined ? `<dt>商誉</dt><dd>${Math.round(r.rep)}</dd>` : ''}${r.sat !== undefined ? `<dt>平均满意度</dt><dd>${Math.round(r.sat)}</dd>` : ''}${r.mcap ? `<dt>年末股价 / 市值</dt><dd>${r.price.toFixed(2)} 元 / ${W(r.mcap)}</dd><dt>派发红利</dt><dd><span class="measure">${W(r.div||0)}</span></dd>` : ''}</dl>
       <h3>营收构成</h3>
-      <dl class="kv"><dt>客运</dt><dd><span class="measure">${W(r.pax)}</span></dd><dt>货运</dt><dd><span class="measure">${W(r.freight)}</span></dd><dt>过轨费收入</dt><dd><span class="measure">${W(r.feeIn)}</span></dd>${r.biz ? `<dt>车站商业</dt><dd><span class="measure">${W(r.biz)}</span></dd>` : ''}${r.overseas ? `<dt>海外项目</dt><dd><span class="measure">${W(r.overseas)}</span></dd>` : ''}${r.rent ? `<dt>地产租金</dt><dd><span class="measure">${W(r.rent)}</span></dd>` : ''}${r.subsidy ? `<dt>公益慢车补贴</dt><dd><span class="measure">${W(r.subsidy)}</span></dd>` : ''}${r.contract ? `<dt>合同奖罚</dt><dd class="${r.contract>=0?'pos':'neg'}"><span class="measure">${W(r.contract)}</span></dd>` : ''}<dt>经营支出</dt><dd class="neg"><span class="measure">${NW(r.opex)}</span></dd><dt>资本支出</dt><dd class="dim"><span class="measure">${W(r.capex)}</span></dd></dl>
+      <dl class="kv"><dt>客运</dt><dd><span class="measure">${W(r.pax)}</span></dd><dt>货运</dt><dd><span class="measure">${W(r.freight)}</span></dd><dt>过轨费收入</dt><dd><span class="measure">${W(r.feeIn)}</span></dd>${r.biz ? `<dt>车站商业</dt><dd><span class="measure">${W(r.biz)}</span></dd>` : ''}${r.overseas ? `<dt>海外项目</dt><dd><span class="measure">${W(r.overseas)}</span></dd>` : ''}${r.rent ? `<dt>地产租金</dt><dd><span class="measure">${W(r.rent)}</span></dd>` : ''}${r.subsidy ? `<dt>公益慢车补贴</dt><dd><span class="measure">${W(r.subsidy)}</span></dd>` : ''}${r.contract ? `<dt>合同奖罚</dt><dd class="${financialClass(r.contract)}"><span class="measure">${W(r.contract)}</span></dd>` : ''}<dt>经营支出</dt><dd class="${financialClass(-r.opex)}"><span class="measure">${NW(r.opex)}</span></dd><dt>资本支出</dt><dd class="dim"><span class="measure">${W(r.capex)}</span></dd></dl>
       ${r.fin ? (() => { const F = r.fin, it = [['银行借款', F.loanIn, 1], ['归还贷款', F.loanOut, -1], ['发行债券', F.bondIn, 1], ['兑付债券', F.bondOut, -1], ['股权融资（上市/增发）', F.equityIn, 1], ['回购股份', F.buyback, -1], ['派发红利', F.div, -1]].filter(x => x[1]);
-        return `<h3>现金流桥接</h3><dl class="kv"><dt>经营净利</dt><dd class="${r.net>=0?'pos':'neg'}"><span class="measure">${W(r.net)}</span></dd><dt>投资净支出（建设与购车）</dt><dd class="neg"><span class="measure">${W(-r.capex)}</span></dd>${it.map(x => `<dt>${x[0]}</dt><dd class="${x[2]>0?'pos':'neg'}"><span class="measure">${W(x[1] * x[2])}</span></dd>`).join('')}${r.cashPreDiv !== undefined ? `<dt>年末现金（派息前 / 派息及融资后）</dt><dd>${W(r.cashPreDiv)} / ${W(r.cash)}</dd>` : ''}${r.frFee ? `<dt>其中经营权年费</dt><dd class="neg"><span class="measure">${W(-r.frFee)}</span></dd>` : ''}</dl>`; })() : ''}
+        return `<h3>现金流桥接</h3><dl class="kv"><dt>经营净利</dt><dd class="${financialClass(r.net)}"><span class="measure">${W(r.net)}</span></dd><dt>投资净支出（建设与购车）</dt><dd class="${financialClass(-r.capex)}"><span class="measure">${W(-r.capex)}</span></dd>${it.map(x => `<dt>${x[0]}</dt><dd class="${financialClass(x[1] * x[2])}"><span class="measure">${W(x[1] * x[2])}</span></dd>`).join('')}${r.cashPreDiv !== undefined ? `<dt>年末现金（派息前 / 派息及融资后）</dt><dd>${W(r.cashPreDiv)} / ${W(r.cash)}</dd>` : ''}${r.frFee ? `<dt>其中经营权年费</dt><dd class="${financialClass(-r.frFee)}"><span class="measure">${W(-r.frFee)}</span></dd>` : ''}</dl>`; })() : ''}
       ${cg.length ? `<h3>货物构成</h3>` + cg.map(([g,v]) => `<div class="region"><span>${CARGO[g].name}</span><div class="bar"><i style="width:${v/tot*100}%;background:${CARGO[g].color}"></i></div><span class="num r muted">${(v/1e4).toFixed(0)}&nbsp;万吨</span></div>`).join('') : ''}
-      ${r.routes.length ? `<h3>线路排行（全年利润）</h3><div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t fin-table"><tr><th>线路</th><th class="r">收入</th><th class="r">利润</th></tr>${r.routes.slice(0,8).map(x => `<tr><td class="name-cell"><span class="clip-name" title="${esc(x.name)}">${esc(x.name)}</span></td><td class="num r">${W(x.rev)}</td><td class="num r ${x.net>=0?'pos':'neg'}">${W(x.net)}</td></tr>`).join('')}</table></div>` : ''}`;
+      ${r.routes.length ? `<h3>线路排行（全年利润）</h3><div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t fin-table"><tr><th>线路</th><th class="r">收入</th><th class="r">利润</th></tr>${r.routes.slice(0,8).map(x => `<tr><td class="name-cell"><span class="clip-name" title="${esc(x.name)}">${esc(x.name)}</span></td><td class="num r">${W(x.rev)}</td><td class="num r ${financialClass(x.net)}">${W(x.net)}</td></tr>`).join('')}</table></div>` : ''}`;
   }
   function pFinance(){
     const S = G.S; const y = G.ym(S.day).y; const h = S.history[S.history.length-1] || {};
     const yr = S.history.filter(x => x.y === (h.y || y));
     const sum = k => yr.reduce((a,x) => a + (x[k]||0), 0);
-    const row = (n, k, neg) => `<tr><td>${n}</td><td class="num r ${neg?'neg':''}">${h[k]!==undefined ? (neg ? NW(h[k]) : W(h[k])) : '—'}</td><td class="num r ${neg?'neg':''}">${neg ? NW(sum(k)) : W(sum(k))}</td></tr>`;
+    const row = (name, key, expense = false) => {
+      const yearValue = sum(key);
+      const color = value => expense ? (Math.abs(value) >= 500 ? 'loss' : '') : key === 'contract' ? financialClass(value) : '';
+      const format = expense ? NW : W;
+      return `<tr><td>${name}</td><td class="num r ${color(h[key])}">${h[key]!==undefined ? format(h[key]) : '—'}</td><td class="num r ${color(yearValue)}">${format(yearValue)}</td></tr>`;
+    };
     const trV = S.trains.reduce((a,t) => a + G.trainValue(t), 0), tkV = G.assets() - trV;
     const lim = G.creditLimit();
     const reps = S.reports || []; if (ui.repY === undefined || !reps.find(r => r.y === ui.repY)) ui.repY = reps.length ? reps[reps.length-1].y : null;
     const repSel = reps.length ? `<h3>年度报告</h3><div class="row" style="flex-wrap:wrap;gap:4px;margin-bottom:8px">${reps.map(r => `<button class="btn sm ${r.y===ui.repY?'primary':''}" data-act="repY" data-y="${r.y}">${r.y}</button>`).join('')}</div><div class="card">${reportHTML(reps.find(r => r.y === ui.repY))}</div>` : `<h3>年度报告</h3><div class="dim">每年 12 月底生成年报。</div>`;
     return `<h2>财务中心</h2>
       <div class="grid3">
-        <div class="stat"><label>现金</label><b class="${S.cash<0?'neg':''}">${W(S.cash)}</b></div>
+        <div class="stat"><label>现金</label><b class="${S.cash<0?'loss':''}">${W(S.cash)}</b></div>
         <div class="stat"><label>银行负债</label><b>${W(S.debt)}</b></div>
         <div class="stat"><label>净资产</label><b class="gold">${W(G.netWorth())}</b></div>
         <div class="stat"><label>商誉</label><b>${Math.round(S.rep ?? 50)}</b> ${repTag()}</div>
@@ -1181,16 +1302,16 @@
       ${monthBanner()}
       <h3>月度收支（近 36 个月）</h3>
       <canvas class="chart" id="finChart"></canvas>
-      <div class="legendrow"><span><i style="background:#2f4f3a"></i>总收入</span><span><i style="background:#ef6461"></i>经营支出</span><span><i style="background:#3f8a55"></i>经营净利</span></div>
+      <div class="legendrow"><span><i style="background:var(--finance-revenue)"></i>总收入</span><span><i style="background:var(--finance-expense)"></i>经营支出</span><span><i style="background:var(--gain)"></i>净利为正</span><span><i style="background:var(--loss)"></i>净利为负</span></div>
       <h3>损益表</h3>
       <div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t fin-table"><tr><th>科目</th><th class="r">上月 (${h.y||'—'}.${h.m||''})</th><th class="r">${h.y||y} 年累计</th></tr>
         ${row('客运收入','pax')}${row('货运收入','freight')}${row('过轨费收入','feeIn')}${row('合同奖金/违约金','contract')}${row('车站商业','biz')}${row('地产租金','rent')}${row('公益慢车补贴','subsidy')}
         ${row('列车运行成本','run',1)}${row('过轨费支出','fees',1)}${row('车辆维护','maint',1)}${row('线路养护','trackMaint',1)}${row('人力（高管与培训）','staff',1)}${row('研发投入','rd',1)}${row('贷款与债券利息','interest',1)}
-        <tr><td><b>经营净利</b></td><td class="num r ${h.net>=0?'pos':'neg'}"><b>${h.net!==undefined?W(h.net):'—'}</b></td><td class="num r ${sum('net')>=0?'pos':'neg'}"><b>${W(sum('net'))}</b></td></tr>
+        <tr><td><b>经营净利</b></td><td class="num r ${financialClass(h.net)}"><b>${h.net!==undefined?W(h.net):'—'}</b></td><td class="num r ${financialClass(sum('net'))}"><b>${W(sum('net'))}</b></td></tr>
         <tr><td class="dim">资本支出（建设与购车，扣除出售回款）</td><td class="num r dim">${h.capex!==undefined?W(h.capex):'—'}</td><td class="num r dim">${W(sum('capex'))}</td></tr>
       </table></div>
       <h3>资产负债</h3>
-      <dl class="kv"><dt>现金</dt><dd><span class="measure">${fmtY(S.cash)}</span></dd><dt>车辆资产（折旧后）</dt><dd><span class="measure">${fmtY(trV)}</span></dd><dt>线路资产（折旧后）</dt><dd><span class="measure">${fmtY(tkV)}</span></dd><dt>银行负债</dt><dd class="neg"><span class="measure">${NW(S.debt)}元</span></dd><dt>土地（市值）</dt><dd><span class="measure">${fmtY(G.landValue())}</span></dd><dt>应付债券</dt><dd class="neg"><span class="measure">${NW((S.bonds||[]).reduce((a,b)=>a+b.amt,0))}元</span></dd><dt><b>净资产</b></dt><dd class="gold"><b>${fmtY(G.netWorth())}</b></dd></dl>
+      <dl class="kv"><dt>现金</dt><dd><span class="measure">${fmtY(S.cash)}</span></dd><dt>车辆资产（折旧后）</dt><dd><span class="measure">${fmtY(trV)}</span></dd><dt>线路资产（折旧后）</dt><dd><span class="measure">${fmtY(tkV)}</span></dd><dt>银行负债</dt><dd class="${financialClass(-S.debt)}"><span class="measure">${NW(S.debt)}元</span></dd><dt>土地（市值）</dt><dd><span class="measure">${fmtY(G.landValue())}</span></dd><dt>应付债券</dt><dd class="neg"><span class="measure">${NW((S.bonds||[]).reduce((a,b)=>a+b.amt,0))}元</span></dd><dt><b>净资产</b></dt><dd class="gold"><b>${fmtY(G.netWorth())}</b></dd></dl>
       ${repSel}
       ${capitalHTML()}
       <h3>银行贷款</h3>
@@ -1204,9 +1325,9 @@
   }
   function drawFinanceCharts(){ const c = $('#finChart'); if (!c) return; const H = G.S.history.slice(-36);
     chart(c, H.map(h => `${h.y}.${h.m}`), [
-      { name:'收入', color:'#2f4f3a', data:H.map(h => h.rev), fill:true },
-      { name:'支出', color:'#ef6461', data:H.map(h => h.opex) },
-      { name:'净利', color:'#3f8a55', data:H.map(h => h.net) } ]); }
+      { color:financeColors.revenue, data:H.map(h => h.rev), fill:true },
+      { color:financeColors.expense, data:H.map(h => h.opex) },
+      { color:financeColors.neutral, data:H.map(h => h.net), signed:true } ]); }
   function chart(c, labels, series, fmt){
     const r = c.getBoundingClientRect(); const dpr = window.devicePixelRatio || 1; c.width = r.width*dpr; c.height = r.height*dpr;
     const x = c.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0); const w = r.width, h = r.height, pl = 52, pr = 10, pt = 10, pb = 22;
@@ -1221,8 +1342,28 @@
     const step = Math.ceil(labels.length / 6); labels.forEach((l,i) => { if (i % step === 0) x.fillText(l, X(i)-14, h-6); });
     series.forEach(s => {
       x.beginPath(); s.data.forEach((v,i) => i ? x.lineTo(X(i), Y(v)) : x.moveTo(X(i), Y(v)));
-      x.strokeStyle = s.color; x.lineWidth = 2; x.stroke();
+      x.lineWidth = 2;
+      if (!s.movement){
+        x.strokeStyle = s.color;
+        if (s.signed && s.data.some(v => v !== 0)){
+          const colors = x.createLinearGradient(0, pt, 0, h-pb);
+          const zero = Math.max(0, Math.min(1, (Y(0)-pt)/(h-pb-pt)));
+          colors.addColorStop(0, financeColors.gain);
+          colors.addColorStop(zero, financeColors.gain);
+          colors.addColorStop(zero, financeColors.loss);
+          colors.addColorStop(1, financeColors.loss);
+          x.strokeStyle = colors;
+        }
+        x.stroke();
+      }
       if (s.fill){ x.lineTo(X(s.data.length-1), Y(Math.max(0,mn))); x.lineTo(X(0), Y(Math.max(0,mn))); x.closePath(); const g = x.createLinearGradient(0,pt,0,h-pb); g.addColorStop(0, s.color+'55'); g.addColorStop(1, s.color+'00'); x.fillStyle = g; x.fill(); }
+      if (s.movement){
+        for (let i = 1; i < s.data.length; i++){
+          x.beginPath(); x.moveTo(X(i-1), Y(s.data[i-1])); x.lineTo(X(i), Y(s.data[i]));
+          x.strokeStyle = financialColor(s.data[i] - s.data[i-1]);
+          x.stroke();
+        }
+      }
     });
   }
 
@@ -1294,7 +1435,7 @@
     return `<div class="card"><div class="row sb"><b>${sp.name}</b><span class="tag blue">${sp.kind}</span></div><p class="detail-copy">${sp.desc}</p>${body}</div>`; }
   function ovCard(o){ const S = G.S, x = (S.overseas || []).find(q => q.id === o.id), q = G.ovQuote(o.id);
     let body = '';
-    if (!x) body = `<dl class="kv"><dt>规模</dt><dd>${o.km} km · ${o.v} km/h</dd><dt>总投资</dt><dd class="num">${W(q.cost)}元</dd><dt>工期</dt><dd>${Math.round(o.months/12)} 年</dd><dt>运营收益</dt><dd class="pos">约 <span class="measure">${W(q.yearly)}元/年</span>，共 <span class="measure">20&nbsp;年</span>（静态回收约 <span class="measure">${q.payback.toFixed(1)}&nbsp;年</span>）</dd><dt>现金节奏</dt><dd>约 3 个月开标；中标后 ${Math.round(o.months/12)} 年内每月投入约 ${W(q.cost / o.months)}元，通车后才有收益${q.endsAfter2020 ? '；通车将晚于 2020 年计分期，可继续自由经营收取' : ''}</dd><dt>投标费用</dt><dd><span class="measure">${W(q.fee)}元</span></dd><dt>中标把握</dt><dd>约 ${pct(q.winP)}</dd></dl>
+    if (!x) body = `<dl class="kv"><dt>规模</dt><dd>${o.km} km · ${o.v} km/h</dd><dt>总投资</dt><dd class="num">${W(q.cost)}元</dd><dt>工期</dt><dd>${Math.round(o.months/12)} 年</dd><dt>运营收益</dt><dd class="gain">约 <span class="measure">${W(q.yearly)}元/年</span>，共 <span class="measure">20&nbsp;年</span>（静态回收约 <span class="measure">${q.payback.toFixed(1)}&nbsp;年</span>）</dd><dt>现金节奏</dt><dd>约 3 个月开标；中标后 ${Math.round(o.months/12)} 年内每月投入约 ${W(q.cost / o.months)}元，通车后才有收益${q.endsAfter2020 ? '；通车将晚于 2020 年计分期，可继续自由经营收取' : ''}</dd><dt>投标费用</dt><dd><span class="measure">${W(q.fee)}元</span></dd><dt>中标把握</dt><dd>约 ${pct(q.winP)}</dd></dl>
       ${q.why.length ? `<div class="neg" style="font-size:12px;margin-top:4px">${q.why.join('；')}</div>` : ''}<div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn sm ${q.ok?'primary':''}" data-act="ovBid" data-id="${o.id}" ${q.ok?'':'disabled'}>参与投标</button></div>`;
     else if (x.st === 'bid') body = `<p class="detail-copy"><span class="tag">已投标</span> 约 ${Math.max(0, Math.ceil((x.at - S.day)/30))} 个月后公布结果</p>`;
     else if (x.st === 'lost') body = `<p class="detail-copy"><span class="tag red">落标</span> 业主国选择了其他方案</p>`;
@@ -1361,6 +1502,24 @@
         document.getElementById(b.id)?.scrollIntoView({ block:'nearest' });
         break;
       }
+      case 'fleetFilter': {
+        ui.idleOnly = b.dataset.v === 'idle';
+        const focused = document.activeElement === b;
+        renderPanel(true);
+        if (focused) $('#panelBody .fleet-filters [aria-pressed=true]')?.focus({ preventScroll:true });
+        break;
+      }
+      case 'withdrawTrain': {
+        const train = S.trains.find(t => t.id === +b.dataset.id);
+        if (!train || !canWithdrawTrain(train)) break;
+        const focused = document.activeElement === b;
+        const foldId = ui.tab === 'routes' ? train.route : train.id;
+        G.assignTrain(train.id, null);
+        renderPanel(true);
+        if (focused) document.getElementById(`fold-${ui.tab}-${foldId}`)?.focus({ preventScroll:true });
+        toast('已下线备用', `${train.name} 可在车队的「闲置」列表重新上线。`, 'good');
+        break;
+      }
       case 'routeFrom': startRoute(+b.dataset.c); break;
       case 'repY': ui.repY = +b.dataset.y; renderPanel(true); break;
       case 'od': { const id = +b.dataset.id; ui.odRoute = ui.odRoute === id ? null : id; renderPanel(true); break; }
@@ -1401,7 +1560,7 @@
       case 'rdStart': { const r = G.startProject(b.dataset.v); if (!r.ok) toast('无法立项', r.msg, 'bad'); renderPanel(true); break; }
       case 'shop': { const r = G.buildShop(+b.dataset.c, +b.dataset.v); if (!r.ok) toast('无法开设', r.msg, 'bad'); else toast('车站商业开业', C[+b.dataset.c].name + '站商铺开始营业。', 'good'); renderPanel(true); renderTop(); break; }
       case 'land': { const r = G.buyLand(+b.dataset.c); if (!r.ok) toast('无法买地', r.msg, 'bad'); else toast('购入土地', `${C[+b.dataset.c].name} · ${W(r.cost)}元`, 'good'); renderPanel(true); renderInspector(); renderTop(); break; }
-      case 'sellLand': { const r = G.sellLand(+b.dataset.c); if (!r.ok) toast('无法卖地', r.msg, 'bad'); else toast('出售土地', (r.gain >= 0 ? '增值 ' : '亏损 ') + W(Math.abs(r.gain)) + '元', r.gain >= 0 ? 'good' : 'bad'); renderPanel(true); renderInspector(); renderTop(); break; }
+      case 'sellLand': { const r = G.sellLand(+b.dataset.c); if (!r.ok) toast('无法卖地', r.msg, 'bad'); else toast('出售土地', (r.gain > 0 ? '增值 ' : r.gain < 0 ? '亏损 ' : '持平 ') + W(Math.abs(r.gain)) + '元', financialClass(r.gain)); renderPanel(true); renderInspector(); renderTop(); break; }
       case 'acceptL': { const r = G.acceptLocal(+b.dataset.id); if (!r.ok) toast('无法同意', r.msg, 'bad'); else toast('达成合作', '协议已生效。', 'good'); renderPanel(true); break; }
       case 'frBid': { const r = G.frBid(+b.dataset.id, +b.dataset.v); if (!r.ok) toast('无法投标', r.msg, 'bad'); renderPanel(true); break; }
       case 'super': { const id = b.dataset.id; if (ui.confirm === 'sp'+id){ ui.confirm = null; const r = G.startSuper(id); if (!r.ok) toast('无法立项', r.msg, 'bad'); else { toast('超级工程开工', G.SUPER.find(x => x.id === id).name + '正式开工。', 'good'); snd('build'); } } else { ui.confirm = 'sp'+id; setTimeout(() => { if (ui.confirm==='sp'+id){ ui.confirm = null; renderPanel(true); } }, 3000); } renderPanel(true); renderTop(); break; }
@@ -1424,7 +1583,20 @@
   $('#panelBody').addEventListener('click', act);
   $('#panelBody').addEventListener('change', e => {
     const b = e.target.closest('[data-act]'); if (!b) return; const a = b.dataset.act; const S = G.S;
-    if (a === 'assign'){ G.assignTrain(+b.dataset.id, b.value ? +b.value : null); b.blur(); renderPanel(true); }
+    if (a === 'assign'){
+      const train = S.trains.find(t => t.id === +b.dataset.id);
+      if (!train) return;
+      const route = b.value ? S.routes.find(r => r.id === +b.value) : null;
+      if (b.value && !route) return;
+      const wasIdle = isIdleTrain(train);
+      G.assignTrain(train.id, route?.id ?? null);
+      b.blur(); renderPanel(true);
+      if (wasIdle && route){
+        const plan = G.econ[train.id]?.plan;
+        if (plan?.ok) toast('已上线', `${train.name} 已分配至 ${route.name}。`, 'good');
+        else toast('已分配线路', `${train.name} 暂未开行${plan?.why ? '：' + plan.why : '。'}`, 'warn');
+      }
+    }
     if (a === 'routePref'){ const r = S.routes.find(r => r.id === +b.dataset.id); r.pref = b.value; G.recompute(); b.blur(); renderPanel(true); }
     if (a === 'slow'){ G.setSlow(+b.dataset.id, b.checked); renderPanel(true); }
     if (a === 'feeMul'){ S.feeMul = +b.value/100; b.blur(); renderPanel(true); }
@@ -1610,7 +1782,11 @@
   $('#bLoad').onclick = () => saveModal(false);
   $('#bNew').onclick = startScreen;
 
-  function afterLoad(){ if (window.Tutorial && Tutorial.active()) Tutorial.stop(false); ui.selCity = ui.selEdge = ui.selRoute = ui.odRoute = ui.confirm = null; ui.openDetails = {}; ui.mode = 'view'; ui.draft = []; ui.newsTop = G.S.news[0]; ui.sig = ''; renderTabs(); renderPanel(true); renderInspector(); renderRouteBar(); renderTop(); renderTicker(); popupQueue = G.popups(); }
+  function clearTrainFloaters(){
+    ui.floaters = [];
+    ui.lastEvt = G.events[G.events.length - 1]?.at || 0;
+  }
+  function afterLoad(){ if (window.Tutorial && Tutorial.active()) Tutorial.stop(false); ui.selCity = ui.selEdge = ui.selRoute = ui.odRoute = ui.confirm = null; ui.openDetails = {}; ui.idleOnly = false; ui.mode = 'view'; ui.draft = []; ui.newsTop = G.S.news[0]; ui.sig = ''; clearTrainFloaters(); renderTabs(); renderPanel(true); renderInspector(); renderRouteBar(); renderTop(); renderTicker(); popupQueue = G.popups(); }
   function renderTicker(){ const S = G.S; $('#tickerItems').innerHTML = S.news.slice(0,8).map(n => `<span><b>${n.date}</b> ${esc(n.title)} — ${esc(n.text)}</span>`).join(''); }
 
   // ---------------- 主循环 ----------------
