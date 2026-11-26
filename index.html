@@ -10,7 +10,7 @@
 <link rel="icon" type="image/png" href="icon-512.png" sizes="512x512">
 <link rel="apple-touch-icon" href="apple-touch-icon.png" sizes="180x180">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="css/style.css?v=20261126-map-audit">
+<link rel="stylesheet" href="css/style.css?v=20261126-audit">
 <link rel="stylesheet" href="css/theme-ticket.css?v=20261126-map-tools">
 </head>
 <body>
@@ -43,7 +43,7 @@
   </div>
   <div class="datebox"><span class="d" id="date">1985-01-01</span><span class="era" id="era">改革开放 · 试点阶段</span></div>
   <div class="speed" id="speed">
-    <button data-s="0" title="暂停 (空格)" aria-label="暂停" aria-pressed="true"><svg class="ui-icon" aria-hidden="true"><use href="#ui-pause"/></svg></button>
+    <button data-s="0" title="暂停（空格）" aria-label="暂停" aria-pressed="true"><svg class="ui-icon" aria-hidden="true"><use href="#ui-pause"/></svg></button>
     <button data-s="1" title="1 天/秒" aria-label="播放，1 天/秒" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#ui-play"/></svg></button>
     <button data-s="2" title="3 天/秒" aria-label="3 天/秒" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#ui-fast"/></svg></button>
     <button data-s="3" title="7 天/秒" aria-label="7 天/秒" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#ui-faster"/></svg></button>
@@ -54,7 +54,7 @@
     <div class="kpi"><label>负债</label><span id="kDebt">—</span></div>
     <div class="kpi"><label>净资产</label><span id="kWorth">—</span></div>
     <div class="kpi"><label>上月净利</label><span id="kNet">—</span></div>
-    <div class="kpi"><label>点亮城市</label><span id="kLit">—</span></div>
+    <div class="kpi"><label>国内</label><span id="kLit">—</span><small id="kLitOverseas"></small></div>
   </div>
   <div class="topbtns">
     <button class="btn sm" id="bSave">存档</button>
@@ -78,6 +78,7 @@
       <button data-z="0" title="地图全览" aria-label="地图全览"><svg class="ui-icon" aria-hidden="true"><use href="#ui-map-fit"/></svg></button>
     </div>
     <div id="ticker"><div class="lbl">要闻</div><div class="items" id="tickerItems"></div></div>
+    <div id="toast" aria-live="polite"></div>
   </section>
   <aside id="panel">
     <div id="sheetbar" class="mobonly">
@@ -90,18 +91,17 @@
   </aside>
 </div>
 <div id="modal"><div class="box" id="modalBox"></div></div>
-<div id="toast"></div>
 <input type="file" id="impFile" accept=".json,application/json" hidden>
-<script src="js/data.js"></script>
+<script src="js/data.js?v=20261126-audit"></script>
 <script src="js/cars.js"></script>
 <script src="js/towns.js"></script>
 <script src="js/cargo.js"></script>
 <script src="js/frontier.js?v=20261124-map"></script>
 <script src="js/art.js?v=20261123-icons"></script>
-<script src="js/game.js?v=20261126-parallel-tracks"></script>
+<script src="js/game.js?v=20261126-map-labels"></script>
 <script src="js/hexmap.js?v=20261124-perf2"></script>
 <script src="js/sound.js"></script>
 <script src="js/tutorial.js?v=20261123-icons"></script>
-<script src="js/ui.js?v=20261126-parallel-tracks"></script>
+<script src="js/ui.js?v=20261126-label-priority"></script>
 </body>
 </html>

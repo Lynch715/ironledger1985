@@ -181,6 +181,7 @@ const Game = (() => {
   let S = null; // 游戏状态
 
   function newGame(company){
+    flushAutoSave();
     registerDesigns(null);
     S = {
       v: 2, mapVer: 2, company: company || '华夏铁道实业', day: 0, cash: 1.5e8, debt: 0,
@@ -247,7 +248,7 @@ const Game = (() => {
   }
 
   // ---------- 费率 ----------
-  function stateFeeBase(y){ return 10 * cpi(y) * S.mods.stateFee; } // 元/列·km
+  function stateFeeBase(y){ return 10 * cpi(y) * S.mods.stateFee; } // 元/列·公里
   // 线路使用费按列车实际能跑到的速度等级收取：慢车走提速线不按高等级收费
   function feeRate(track, use, y, vTrain){
     let base = 10 * cpi(y) * clsFeeMul(Math.min(track.v, vTrain || track.v));
@@ -600,7 +601,9 @@ const Game = (() => {
         t.revM = (t.revM||0) + e.revTrip; t.costM = (t.costM||0) + e.costTrip + e.feeTrip;
         const r = S.routes.find(r => r.id===t.route);
         if (r) { r.revM = (r.revM||0) + e.revTrip; r.costM = (r.costM||0) + e.costTrip + e.feeTrip; }
-        events.push({ t:t.id, amt:net, at:performance.now() });
+        const legs = e.plan.legs;
+        const city = t.dir ? legs[legs.length - 1].to : legs[0].from;
+        events.push({ t:t.id, city, amt:net, at:performance.now() });
         if (events.length > 60) events.shift();
       }
     });
@@ -611,7 +614,7 @@ const Game = (() => {
     let changed = false;
     // 先结算上个月（此时月初到期的竣工、交付、开站等尚未生效，不会被计入上月）
     { const t = ym(S.day); const key = t.y + '-' + t.m;
-      if (key !== S.lastYM) { const prev = S.lastYM; S.lastYM = key; monthEnd(prev); changed = true; recompute(); autoSave(); } }
+      if (key !== S.lastYM) { const prev = S.lastYM; S.lastYM = key; monthEnd(prev); changed = true; recompute(); autoSave(true); } }
     if (S.over) return;
     S.tracks.forEach(tr => {
       if (tr.status === 'build' && tr.sup && !superPaid(tr.sup)) return; // 超级工程：尾款付清才能通车
@@ -697,8 +700,40 @@ const Game = (() => {
     checkScenario(py);
     if (t.y === 2021 && t.m === 1 && !S.achievements.end && !simulating) { S.achievements.end = true; const sc = recordFree(); pendingPopups.push({ type:'end', score:sc }); }
   }
-  let autoSaveErr = null, autoSaveAt = 0;
-  function autoSave(){ if (simulating) return; try { save('auto'); autoSaveErr = null; autoSaveAt = Date.now(); } catch(e) { autoSaveErr = '浏览器存储空间不足或不可用，自动存档失败'; } }
+  let autoSaveErr = null, autoSaveAt = 0, pendingAutoSave = null;
+  function cloneSaveState(value){
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(cloneSaveState);
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneSaveState(item)]));
+  }
+  function autoSave(defer = false){
+    if (simulating) return;
+    if (!defer){ commitAutoSave(S, saveMeta); return; }
+    // 在原来的存档时点保留结算快照；空闲回调期间游戏可能已走到下一个日结。
+    S.saveVer = SAVE_VER;
+    const alreadyScheduled = pendingAutoSave?.source === S;
+    pendingAutoSave = { source:S, state:typeof structuredClone === 'function' ? structuredClone(S) : cloneSaveState(S), meta:saveMeta() };
+    if (alreadyScheduled) return;
+    const source = S;
+    const flush = () => { if (pendingAutoSave?.source === source) flushAutoSave(); };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(flush, { timeout:900 });
+    else setTimeout(flush, 0);
+  }
+  function flushAutoSave(){
+    const snapshot = pendingAutoSave;
+    pendingAutoSave = null;
+    if (!snapshot || snapshot.source !== S) return;
+    commitAutoSave(snapshot.state, () => snapshot.meta);
+  }
+  function commitAutoSave(state, meta){
+    state.saveVer = SAVE_VER;
+    try {
+      writeSave('auto', state, meta);
+      autoSaveErr = null;
+      autoSaveAt = Date.now();
+    } catch(e) { autoSaveErr = '浏览器存储空间不足或不可用，自动存档失败'; }
+  }
+  if (typeof window !== 'undefined') window.addEventListener?.('pagehide', flushAutoSave);
   function cityGrowth(y){
     S.boost = S.boost || {}; S.cityLv = S.cityLv || {};
     cities.forEach(c => {
@@ -1720,9 +1755,10 @@ const Game = (() => {
   const SAVE_VER = 6;
   function saveMeta(){ const t = ym(S.day); return { company:S.company, date:`${t.y}年${t.m}月`, worth:netWorth(), lit:Object.keys(S.lit || {}).length, scn:S.scn ? (SCENARIOS.find(x => x.id === S.scn.id) || {}).title || null : null, at:Date.now() }; }
   function metas(){ try { return JSON.parse(localStorage.getItem('tdcq2_meta') || '{}'); } catch(e) { return {}; } }
-  function save(slot){ slot = slot || 'manual'; S.saveVer = SAVE_VER; const str = JSON.stringify(S); localStorage.setItem('tdcq2_save_' + slot, str);
+  function save(slot){ S.saveVer = SAVE_VER; return writeSave(slot || 'manual', S, saveMeta); }
+  function writeSave(slot, state, meta){ localStorage.setItem('tdcq2_save_' + slot, JSON.stringify(state));
     // 先写内容，再写摘要；摘要写失败时读档界面会从内容重建
-    try { const m = metas(); m[slot] = saveMeta(); localStorage.setItem('tdcq2_meta', JSON.stringify(m)); } catch(e) {} return true; }
+    try { const m = metas(); m[slot] = meta(); localStorage.setItem('tdcq2_meta', JSON.stringify(m)); } catch(e) {} return true; }
   // —— 存档校验：不通过则拒绝读取，并给出具体字段 ——
   const fin = v => typeof v === 'number' && isFinite(v);
   // 顶层字段：缺失时用默认值补齐（旧档兼容），类型不对则拒绝
@@ -1814,13 +1850,14 @@ const Game = (() => {
   // 在临时状态里迁移、校验、重建缓存；全部成功后才切换，失败时原局面原样保留
   function adopt(st, ver){
     const errs = validateState(st, ver); if (errs.length) { registerDesigns(S); return { ok:false, msg:errs.join('；') }; }
+    flushAutoSave();
     const old = S;
     try { S = migrate(st); fixUp(); if (!fin(netWorth())) throw new Error('净资产计算异常'); }
     catch(e) { S = old; registerDesigns(S); if (S) { try { recompute(); } catch(_) {} } return { ok:false, msg:'存档内容损坏：' + (e && e.message || e) }; }
     return { ok:true };
   }
   let lastLoadErr = '';
-  function load(slot){ let s; try { s = localStorage.getItem('tdcq2_save_' + (slot||'manual')); } catch(e) { lastLoadErr = '浏览器存储不可用'; return false; }
+  function load(slot){ if (slot === 'auto') flushAutoSave(); let s; try { s = localStorage.getItem('tdcq2_save_' + (slot||'manual')); } catch(e) { lastLoadErr = '浏览器存储不可用'; return false; }
     if (!s) { lastLoadErr = '没有存档'; return false; }
     let st; try { st = JSON.parse(s); } catch(e) { lastLoadErr = '存档格式无法解析'; return false; }
     const r = adopt(st); lastLoadErr = r.ok ? '' : r.msg; return r.ok; }

@@ -10,6 +10,8 @@
     }, { capture:true, passive:false });
   }
   const G = Game, C = G.cities, E = G.edges;
+  const cityTotals = { domestic:C.filter(c => !c.abroad).length, overseas:C.filter(c => c.abroad).length };
+  const canvasDpr = () => Math.min(window.devicePixelRatio || 1, 2);
   const icon = Art.icon;
   const W = G.fmtW;
   const fmtY = y => W(y) + '元';
@@ -29,7 +31,7 @@
   const SPEEDS = [0, 1, 3, 7, 15];
   const ui = { tab:'overview', speed:1, lastSpeed:1, selCity:null, selEdge:null, selRoute:null, mode:'view', draft:[], openDetails:{}, idleOnly:false,
     layers:{ state:true, rivals:true, cand:true, trains:true, labels:true, flow:false, industry:false }, mf:{ use:'all', type:'all', origin:'all', show:'sale', cat:'loco', ck:'all' },
-    buyRoute:null, sig:'', confirm:null, modalOpen:false, floaters:[], lastEvt:0, newsTop:null };
+    buyRoute:null, sig:'', confirm:null, modalOpen:false, floaters:new Map(), lastEvt:0, newsTop:null };
   const RIVAL = {}; RIVALS.forEach(r => RIVAL[r.id] = r);
   const ownerName = o => o==='P' ? (G.S.company) : o==='S' ? '国家铁路' : (RIVAL[o] ? RIVAL[o].name : o);
   const ownerColor = o => o==='P' ? P.own : o==='S' ? '#8095b0' : (RIVAL[o] ? RIVAL[o].color : '#999');
@@ -42,13 +44,15 @@
   // 性能：优先用压缩后的 WebP（img/trains/s|m/<ID>.webp：s 给列表小图，m 给卡片大图），没有就退回原 PNG，再没有才用 SVG。
   // 图片加载成功过一次后，后续重绘不再附带隐藏的 SVG，减少面板每次重绘的节点数。
   const artModel = {}, carCache = {}, imgOK = {};
+  const updatedArt = new Set('XNH50 HNH80 XDH40 XD220 HNK200 OWN_EH OWN_EL OWN_FD OWN_FE OWN_PD OWN_PE XG400Z ZJ200 XF280 HXN3 HXN5 RW27 YW27 YZ27'.split(' '));
   const svgOf = k => k[0] === 'c' ? (carCache[k.slice(2)] || (carCache[k.slice(2)] = Art.car(G.carById[k.slice(2)]))) : (artCache[k.slice(2)] || (artCache[k.slice(2)] = Art.svg(artModel[k.slice(2)])));
   window.__artOk = img => { imgOK[img.dataset.k] = img.getAttribute('src'); img.parentNode.classList.add('has-img'); };
   window.__artErr = img => { const d = img.parentNode; if (img.dataset.png){ const p = img.dataset.png; img.removeAttribute('data-png'); img.src = p; return; }
     delete imgOK[img.dataset.k]; const k = img.dataset.k.split('|')[0]; img.remove(); if (d){ d.classList.remove('has-img'); if (!d.querySelector('svg')) d.insertAdjacentHTML('beforeend', svgOf(k)); } };
   function tartHTML(dir, id, k, sz){ const ik = k + '|' + sz, ok = imgOK[ik];
     if (ok) return `<div class="tart has-img"><img src="${ok}" alt="" data-k="${ik}" onerror="__artErr(this)"></div>`;
-    return `<div class="tart"><img src="img/${dir}/${sz}/${id}.webp" data-png="img/${dir}/${id}.png" alt="" data-k="${ik}" onload="__artOk(this)" onerror="__artErr(this)">${svgOf(k)}</div>`; }
+    const version = updatedArt.has(id) ? '?v=20261126-map-labels' : '';
+    return `<div class="tart"><img src="img/${dir}/${sz}/${id}.webp${version}" data-png="img/${dir}/${id}.png${version}" alt="" data-k="${ik}" onload="__artOk(this)" onerror="__artErr(this)">${svgOf(k)}</div>`; }
   const artOf = (m, key, sz) => { artModel[key] = m; return tartHTML('trains', (m && m.img) || m.id, 't:' + key, sz || 'm'); };
   const art = (id, sz) => artOf(G.trainById[id], id, sz);
   const carArt = (id, sz) => tartHTML('cars', id, 'c:' + id, sz || 'm');
@@ -69,18 +73,21 @@
   // ---------------- 地图 ----------------
   const cv = $('#map'), mainCtx = cv.getContext('2d');
   let ctx = mainCtx;   // 绘图目标：平时是地图画布，缓存静态图层时临时切到离屏画布
-  let DPR = window.devicePixelRatio || 1;
+  let DPR = canvasDpr();
   const view = { s: 18, ox: 0, oy: 0 };
   const COS = Math.cos(35 * Math.PI/180);
   const wx = lon => (lon - 104) * COS, wy = lat => -(lat - 35);
   const sx = lon => wx(lon) * view.s + view.ox, sy = lat => wy(lat) * view.s + view.oy;
   const fitBounds = { x0:wx(86), x1:wx(128.5), y0:wy(48.5), y1:wy(21) };
-  const fitScale = (w,h) => Math.min(w / (fitBounds.x1-fitBounds.x0), (h-34) / (fitBounds.y1-fitBounds.y0)) * 0.95;
-  function resize(){ const r = cv.getBoundingClientRect(); DPR = window.devicePixelRatio || 1; cv.width = r.width*DPR; cv.height = r.height*DPR; ui.mapDrawn = false; }
+  let tickerHeight = 0;
+  const fitScale = (w,h) => Math.min(w / (fitBounds.x1-fitBounds.x0), (h-tickerHeight) / (fitBounds.y1-fitBounds.y0)) * 0.95;
+  function resize(){ const r = cv.getBoundingClientRect(); tickerHeight = $('#ticker').offsetHeight;
+    DPR = canvasDpr(); cv.width = r.width*DPR; cv.height = r.height*DPR; ui.mapDrawn = false; }
   function fit(){ const { width, height } = cv.getBoundingClientRect();
     const { x0, x1, y0, y1 } = fitBounds;
-    view.s = fitScale(width,height); view.ox = width/2 - (x0+x1)/2*view.s; view.oy = (height-34)/2 - (y0+y1)/2*view.s; }
-  window.addEventListener('resize', () => { resize(); if (ui.selEdge !== null) renderInspector(); });
+    tickerHeight = $('#ticker').offsetHeight;
+    view.s = fitScale(width,height); view.ox = width/2 - (x0+x1)/2*view.s; view.oy = (height-tickerHeight)/2 - (y0+y1)/2*view.s; }
+  window.addEventListener('resize', () => { resize(); schedulePanelCharts(); if (ui.selEdge !== null) renderInspector(); });
 
   const RIVERS = [
     { name:'长江', pts:[[91,33.2],[95,33],[97.5,32.5],[99.2,29.5],[100.2,26.9],[101.8,26.5],[103.3,28.2],[104.6,28.8],[105.8,28.9],[106.6,29.6],[108.4,30.7],[110.2,31],[111.3,30.7],[112.5,30.2],[113.6,29.8],[114.3,30.6],[115.4,29.9],[116.2,29.8],[117.1,30.5],[118.2,31.4],[118.8,32.1],[119.8,32.3],[120.9,31.9],[121.9,31.3]] },
@@ -144,13 +151,13 @@
     return [w, h, DPR, view.s, view.ox, view.oy, JSON.stringify(ui.layers), ui.selEdge, selR ? selR.color + selR.stops.join('-') : '', ui.mode, ui.draft.join('-'),
       trk, Object.keys(S.unlock || {}).length, S.lastYM, (ui.layers.flow || ui.layers.industry) ? econStamp : 0, P.font].join('|'); }
   function labelKey(w, h){ const S = G.S;
-    return [w, h, DPR, view.s, view.ox, view.oy, ui.layers.labels ? 1 : 0, ui.selCity, ui.draft.join('-'), Object.keys(S.lit).join(','),
-      Object.keys(S.stations).map(c => c + ':' + G.stationLv(+c)).join(','), G.ym(S.day).y, P.font].join('|'); }
+    return [w, h, DPR, view.s, view.ox, view.oy, ui.layers.labels ? 1 : 0, ui.selCity, ui.mode, ui.draft.join('-'), Object.keys(S.lit).join(','),
+      Object.keys(S.stations).map(c => c + ':' + G.stationLv(+c)).join(','), S.lastYM, P.font].join('|'); }
   // 视角连续变化（拖动、缩放）时直接画到地图上；停下来的那一帧再写进缓存，之后每帧只贴图
   function cachedLayer(name, key, w, h, draw){
     const st = layerSt[name], lc = layerCv[name], now = performance.now();
     const moving = key !== st.prev; st.prev = key;
-    if (st.ok && key === st.key && now - st.t < 4000){ ctx.setTransform(1,0,0,1,0,0); ctx.drawImage(lc, 0, 0); ctx.setTransform(DPR,0,0,DPR,0,0); return; }
+    if (st.ok && key === st.key && (name === 'label' || now - st.t < 4000)){ ctx.setTransform(1,0,0,1,0,0); ctx.drawImage(lc, 0, 0); ctx.setTransform(DPR,0,0,DPR,0,0); return; }
     if (moving){ st.ok = false; draw(); return; }
     if (lc.width !== cv.width || lc.height !== cv.height){ lc.width = cv.width; lc.height = cv.height; }
     const g = lc.getContext('2d'); g.setTransform(1,0,0,1,0,0); g.clearRect(0, 0, lc.width, lc.height); g.setTransform(DPR,0,0,DPR,0,0);
@@ -161,8 +168,8 @@
   }
   // 城市光晕：同半径的径向渐变预先画成小图，每帧按呼吸亮度贴图（与逐帧建渐变的效果一致）
   const glowCache = {};
-  function glowSprite(R){ const q = Math.max(1, Math.round(R*2)/2), key = q + P.glow; let g = glowCache[key]; if (g) return g;
-    const sc = Math.min(3, Math.max(1, DPR)), n = Math.ceil(q*2*sc) + 2, c = document.createElement('canvas'); c.width = c.height = n;
+  function glowSprite(R){ const q = Math.max(1, Math.round(R*2)/2), key = q + '|' + DPR + P.glow; let g = glowCache[key]; if (g) return g;
+    const sc = DPR, n = Math.ceil(q*2*sc) + 2, c = document.createElement('canvas'); c.width = c.height = n;
     const x = c.getContext('2d'), m = n/2, gr = x.createRadialGradient(m, m, 0, m, m, q*sc); gr.addColorStop(0, P.glow.replace('A', '1')); gr.addColorStop(1, P.glow.replace('A', '0'));
     x.fillStyle = gr; x.beginPath(); x.arc(m, m, q*sc, 0, Math.PI*2); x.fill(); return glowCache[key] = { c, r:n/2/sc }; }
   function drawGlow(x, y, R, a){ const g = glowSprite(R); ctx.globalAlpha = a; ctx.drawImage(g.c, x - g.r, y - g.r, g.r*2, g.r*2); ctx.globalAlpha = 1; }
@@ -253,13 +260,14 @@
     // 城市
     const pulse = 0.5 + 0.5*Math.sin(now/600);
     const yNow = G.ym(S.day).y;
+    const key = labelKey(w, h);
+    const labels = cityLabelLayout(key, w, h, yNow);
     C.forEach(c => {
       const x = sx(c.lon), y = sy(c.lat);
       if (x < -80 || y < -80 || x > w + 80 || y > h + 80) return;   // 屏幕外的城市不画
-      const pop = G.popOf(c, yNow);
+      const r = markerRadius(c, yNow);
       if (c.tier > 1){ // 二三线城市：方形站标
         const lv = G.stationLv(c.i), lit = !!S.lit[c.i], st = S.stations[c.i];
-        const r = (c.tier === 2 ? 3.4 : 2.7) + Math.min(1.5, view.s/40);
         if (lit) drawGlow(x, y, r*3.4, +(0.45+0.2*pulse).toFixed(2));
         ctx.beginPath(); ctx.rect(x-r, y-r, r*2, r*2);
         if (lv >= 1){ ctx.fillStyle = lit ? P.cityLit : P.city; ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = lit ? P.cityLitLine : P.cityLine; ctx.stroke();
@@ -268,7 +276,6 @@
         if (ui.selCity === c.i){ ctx.strokeStyle = '#7a2a12'; ctx.lineWidth = 2; ctx.strokeRect(x-r-4, y-r-4, r*2+8, r*2+8); }
         return;
       }
-      const r = 2.6 + Math.sqrt(pop)/6.5;
       const lit = !!S.lit[c.i];
       if (lit) drawGlow(x, y, r*4.2, +(0.55+0.2*pulse).toFixed(2));
       ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
@@ -284,34 +291,157 @@
     // 列车
     if (ui.layers.trains) drawTrains(now, w, h);
     // 标签
-    if (ui.layers.labels) cachedLayer('label', labelKey(w, h), w, h, () => drawLabels(w, h));
+    if (labels.boxes.length) cachedLayer('label', key, w, h, () => drawLabels(labels.boxes));
     // 浮动收入
-    drawFloaters(now);
+    drawFloaters(now, w, h, labels);
   }
-  function drawLabels(w, h){
-    const S = G.S; const yNow = G.ym(S.day).y;
-    {
-      ctx.textBaseline = 'middle';
-      C.forEach(c => {
-        const pop = c.pop0; const lit = !!S.lit[c.i];
-        const town = c.tier > 1, hasSt = town && G.stationLv(c.i) >= 1;
-        if (town ? !(lit || hasSt || view.s > 30 || (c.tier === 2 && view.s > 22) || ui.selCity === c.i || ui.draft.includes(c.i))
-                 : !(lit || pop >= 100 || view.s > 26 || ui.selCity === c.i || ui.draft.includes(c.i))) return;
-        const x = sx(c.lon), y = sy(c.lat); if (x < -260 || y < -30 || x > w + 30 || y > h + 30) return;
-        const r = town ? 4 : 2.6 + Math.sqrt(G.popOf(c, yNow))/6.5;
-        ctx.font = `${lit ? '600 ' : ''}${town ? 11 : pop >= 300 ? 13 : 12}px ${P.font}`;
-        ctx.lineWidth = 3; ctx.strokeStyle = P.halo; ctx.strokeText(c.name, x + r + 4, y);
-        ctx.fillStyle = lit ? P.labelLit : P.label; ctx.fillText(c.name, x + r + 4, y);
-      });
-      ctx.textBaseline = 'alphabetic';
+  function markerRadius(c, year){
+    const radius = c.tier > 1 ? (c.tier === 2 ? 3.4 : 2.7) + Math.min(1.5, view.s/40)
+      : 2.6 + Math.sqrt(G.popOf(c, year))/6.5;
+    return radius * Math.min(1, Math.max(0.48, view.s/22));
+  }
+  const labelDirections = [[1,0],[-1,0],[0,-1],[0,1],[1,-1],[-1,-1],[1,1],[-1,1]];
+  const overlaps = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  const distanceToBoxSq = (x,y,b) => Math.max(b.left-x, 0, x-b.right)**2 + Math.max(b.top-y, 0, y-b.bottom)**2;
+  const screenBox = (x,y,hw,hh) => ({ left:x-hw, right:x+hw, top:y-hh, bottom:y+hh });
+  const inMap = (b,w,h) => b.left >= 2 && b.top >= 2 && b.right <= w-2 && b.bottom <= h-2;
+  function markerOverlap(m, box){
+    return m.c.tier > 1 ? overlaps(screenBox(m.x,m.y,m.r,m.r),box) : distanceToBoxSq(m.x,m.y,box) < m.r*m.r;
+  }
+  let currentLabelLayout;
+  function cityLabelLayout(key,w,h,year){
+    if (currentLabelLayout?.key === key) return currentLabelLayout;
+    const boxes = [];
+    const origin = cv.getBoundingClientRect();
+    const controls = [...document.querySelectorAll('#maptools button, #zoom, #legend, #ticker, #routebar.show')]
+      .map(el => el.getBoundingClientRect()).filter(b => b.width && b.height)
+      .map(b => ({left:b.left-origin.left, right:b.right-origin.left, top:b.top-origin.top, bottom:b.bottom-origin.top}));
+    currentLabelLayout = { key, boxes, controls };
+    if (!ui.layers.labels && ui.selCity === null) return currentLabelLayout;
+    const S = G.S, draft = new Set(ui.draft);
+    const markers = C.map(c => ({
+      c, x:sx(c.lon), y:sy(c.lat), r:markerRadius(c,year)+0.8, lit:!!S.lit[c.i], open:G.stationLv(c.i) >= 1,
+      selected:ui.selCity === c.i, pop:G.popOf(c,year)
+    })).filter(m => m.x + m.r >= 0 && m.y + m.r >= 0 && m.x - m.r <= w && m.y - m.r <= h);
+    const candidates = markers.filter(({c,selected,lit,open}) => selected || (ui.layers.labels &&
+      (lit || draft.has(c.i) || (c.tier > 1 ? open || view.s > 30 || (c.tier === 2 && view.s > 22)
+        : c.pop0 >= 100 || view.s > 26))));
+    const priority = m => m.selected ? 0 : m.lit ? 1 : draft.has(m.c.i) ? 2 : m.c.tier === 1 ? 3 : 4;
+    candidates.sort((a,b) => priority(a) - priority(b) || Number(!!a.c.abroad) - Number(!!b.c.abroad) || b.pop - a.pop);
+    // 未开站的二三线方框仍绘在地图上，标签层可从上方经过。
+    const obstacles = markers.filter(m => m.c.tier === 1 || m.lit || m.open);
+    mainCtx.save();
+    mainCtx.textAlign = 'center'; mainCtx.textBaseline = 'middle';
+    const favored = candidates.filter(m => m.selected || m.lit);
+    const layoutFavored = compact => {
+      const placed = [];
+      for (const m of favored){
+        const label = findCityLabel(m,obstacles,placed,controls,w,h,compact);
+        if (label) placed.push(label);
+      }
+      return placed;
+    };
+    let favoredBoxes = layoutFavored(false);
+    if (favoredBoxes.length < favored.length && view.s < 18){
+      // 留不下同组标签时，以紧凑字号再排同一组，保留显示更多点亮城市的一版。
+      const compactBoxes = layoutFavored(true);
+      if (compactBoxes.length > favoredBoxes.length) favoredBoxes = compactBoxes;
     }
+    boxes.push(...favoredBoxes);
+    const hasUnlabeledLit = favoredBoxes.filter(b => b.lit).length < Object.values(S.lit).filter(Boolean).length;
+    for (const m of candidates){
+      if (m.selected || m.lit || (m.c.abroad && hasUnlabeledLit)) continue;
+      const label = findCityLabel(m,obstacles,boxes,controls,w,h,false);
+      if (label) boxes.push(label);
+    }
+    mainCtx.restore();
+    return currentLabelLayout;
   }
-  function drawFloaters(now){
-    if (!ui.floaters.length) return;
-    ctx.font = '600 11px ' + 'Menlo, monospace';
-    ui.floaters = ui.floaters.filter(f => now - f.t0 < 1600);
-    ui.floaters.forEach(f => { const k = (now - f.t0)/1600; ctx.globalAlpha = 1 - k; ctx.fillStyle = financialColor(f.amt); ctx.fillText((f.amt>0?'+':'') + (f.amt/1e4).toFixed(1) + '万', f.x + 6, f.y - 8 - k*18); });
-    ctx.globalAlpha = 1;
+  const localLabelSlides = [0,2,-2,4,-4,6,-6,8,-8,10,-10,12,-12,14,-14,16,-16,18,-18,20,-20];
+  function findCityLabel(m,obstacles,placed,controls,w,h,compact){
+    const size = m.c.tier > 1 ? 11 : m.c.pop0 >= 300 ? 13 : 12;
+    const sizes = m.selected ? [size,10,9] : compact ? [10] : [size,10];
+    for (const px of sizes){
+      let best = null, bestDistance = 30**2;
+      const font = `${m.lit || m.selected ? '600 ' : ''}${px}px ${P.font}`;
+      mainCtx.font = font;
+      const mt = mainCtx.measureText(m.c.name);
+      const hw = Math.max(mt.width/2, mt.actualBoundingBoxLeft || 0, mt.actualBoundingBoxRight || 0) + 2;
+      const hh = Math.max(px/2, mt.actualBoundingBoxAscent || 0, mt.actualBoundingBoxDescent || 0) + 2;
+      const nearby = obstacles.filter(p => p !== m && Math.abs(p.x-m.x) <= 60+hw+p.r && Math.abs(p.y-m.y) <= 60+hh+p.r);
+      const slides = m.selected || m.lit ? localLabelSlides : [0,3,-3];
+      for (const inset of [0,2,4,6]){
+        for (const [dx,dy] of labelDirections){
+          const gap = (m.r+1+inset) / (dx && dy ? Math.SQRT2 : 1);
+          for (const slide of slides){
+            const x = m.x + dx*(hw+gap) - dy*slide;
+            const y = m.y + dy*(hh+gap) + dx*slide;
+            const box = screenBox(x,y,hw,hh);
+            const centerDist = (x-m.x)**2 + (y-m.y)**2;
+            const edgeDist = distanceToBoxSq(m.x,m.y,box);
+            const inkX = x + ((mt.actualBoundingBoxRight || 0) - (mt.actualBoundingBoxLeft || 0))/2;
+            const inkY = y + ((mt.actualBoundingBoxDescent || 0) - (mt.actualBoundingBoxAscent || 0))/2;
+            if (centerDist > bestDistance || (inkX-m.x)**2+(inkY-m.y)**2 > 30**2 || edgeDist > 14**2 || !inMap(box,w,h) ||
+                markerOverlap(m,box) ||
+                controls.some(b => overlaps(b,box)) || placed.some(b => overlaps(b,box))) continue;
+            if (nearby.some(p => (p.x-x)**2 + (p.y-y)**2 < centerDist - 0.001 ||
+                markerOverlap(p,box))) continue;
+            best = { ...box, x, y, c:m.c, lit:m.lit, selected:m.selected, font };
+            bestDistance = centerDist;
+          }
+        }
+      }
+      if (best) return best;
+    }
+    return null;
+  }
+  function drawLabels(boxes){
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 3; ctx.strokeStyle = P.halo;
+    for (const { c, x, y, lit, selected, font } of boxes){
+      ctx.font = font; ctx.fillStyle = lit || selected ? P.labelLit : P.label;
+      ctx.strokeText(c.name,x,y);
+      ctx.fillText(c.name,x,y);
+    }
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  }
+  function drawFloaters(now,w,h,labels){
+    const overview = view.s <= fitScale(w,h)*1.02;
+    const events = G.events, latest = events[events.length - 1];
+    if (latest && latest.at > ui.lastEvt){
+      if (!overview && ui.layers.trains && ui.speed <= 3){
+        for (const {city,amt,at} of events){
+          if (at <= ui.lastEvt || !C[city]) continue;
+          const active = ui.floaters.get(city);
+          ui.floaters.set(city,{ amt:amt + (active && now-active.t0<1600 ? active.amt : 0), t0:now });
+        }
+      }
+      ui.lastEvt = latest.at;
+    }
+    if (overview || !ui.layers.trains || ui.speed > 3){ ui.floaters.clear(); return; }
+    if (!ui.floaters.size) return;
+    ctx.font = '600 11px Menlo, monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const drawn = [];
+    const year = G.ym(G.S.day).y;
+    for (const [city,f] of ui.floaters){
+      const age = (now-f.t0)/1600;
+      if (age >= 1){ ui.floaters.delete(city); continue; }
+      const c = C[city], x = sx(c.lon), y = sy(c.lat);
+      const text = (f.amt>0 ? '+' : '') + (f.amt/1e4).toFixed(1) + '万';
+      const hw = ctx.measureText(text).width/2+2, gap = markerRadius(c,year) + 13 - age*3;
+      const pos = [[x,y+gap],[x-hw/2,y+gap],[x+hw/2,y+gap],[x,y+gap+10],[x,y-gap],[x-hw-gap,y],[x+hw+gap,y]]
+        .find(([px,py]) => {
+          const box = screenBox(px,py,hw,8);
+          return inMap(box,w,h) && !labels.boxes.some(b => overlaps(b,box)) &&
+            !labels.controls.some(b => overlaps(b,box)) && !drawn.some(b => overlaps(b,box));
+        });
+      if (!pos) continue;
+      const box = screenBox(...pos,hw,8);
+      drawn.push(box);
+      ctx.globalAlpha = 1-age; ctx.fillStyle = financialColor(f.amt); ctx.fillText(text,...pos);
+    }
+    ctx.globalAlpha = 1; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
   }
   // 本公司客货流量（按区段月运量）
   function drawFlows(){
@@ -387,10 +517,6 @@
       trainRoutesSource = S.routes;
       trainRoutes = new Map(S.routes.map(r => [r.id, r]));
     }
-    const events = G.events, latest = events[events.length - 1];
-    const fresh = ui.speed <= 3 && latest?.at > ui.lastEvt ? events.filter(e => e.at > ui.lastEvt) : null;
-    if (latest) ui.lastEvt = latest.at;
-    const positions = fresh && new Map();
     const scale = Math.max(0.67, Math.min(1, 0.48 + view.s/60));
     const sw = trainSpriteWidth * scale, sh = trainSpriteHeight * scale;
     // 全图视角下，同一小块屏幕区域只画一个车标，放大后恢复逐列显示。
@@ -422,7 +548,6 @@
         if (occupied.has(cell)) continue;
         occupied.add(cell);
       }
-      positions?.set(t.id, { x, y });
       const model = G.trainById[t.model];
       const sprite = trainSprite(G.isUnit(model) ? 'unit' : model.use, route.color);
       const length = Math.hypot(dx, dy) || 1;
@@ -431,10 +556,7 @@
       ctx.drawImage(sprite, -sw/2, -sh/2, sw, sh);
     }
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    if (fresh) for (const ev of fresh){
-      const p = positions.get(ev.t);
-      if (p) ui.floaters.push({ x:p.x, y:p.y, amt:ev.amt, t0:now });
-    }
+
   }
 
   // 地图交互
@@ -460,7 +582,13 @@
   if (window.ResizeObserver) new ResizeObserver(() => { const r = cv.getBoundingClientRect(); if (r.width && (Math.abs(r.width*DPR - cv.width) > 1 || Math.abs(r.height*DPR - cv.height) > 1)) resize(); }).observe($('#mapwrap'));
   // 手机布局：地图 / 分屏 / 面板 三档
   const SHEET = ['m-map', '', 'm-full']; let sheet = 1;
-  function setSheet(k){ sheet = Math.max(0, Math.min(2, k)); document.body.classList.remove('m-map','m-full'); if (SHEET[sheet]) document.body.classList.add(SHEET[sheet]); }
+  const mobile = window.matchMedia('(max-width: 760px)');
+  function positionToasts(){
+    const wrap = $('#toast'), parent = $(mobile.matches && sheet === 2 ? '#panel' : '#mapwrap');
+    if (wrap.parentNode !== parent) parent.append(wrap);
+  }
+  mobile.addEventListener('change', positionToasts);
+  function setSheet(k){ sheet = Math.max(0, Math.min(2, k)); document.body.classList.remove('m-map','m-full'); if (SHEET[sheet]) document.body.classList.add(SHEET[sheet]); positionToasts(); schedulePanelCharts(); }
   $('#bSheetUp').onclick = () => setSheet(sheet + 1);
   $('#bSheetDn').onclick = () => setSheet(sheet - 1);
   const menuButton = $('#bMenu');
@@ -475,7 +603,7 @@
   ui.setSheet = setSheet; ui.sheet = () => sheet;
   cv.addEventListener('wheel', e => { e.preventDefault(); const r = cv.getBoundingClientRect(); zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1/1.15); }, { passive:false });
   function zoomAt(px, py, k){ const ns = Math.max(4, Math.min(72, view.s * k)); k = ns / view.s; view.ox = px - (px - view.ox)*k; view.oy = py - (py - view.oy)*k; view.s = ns; }
-  document.querySelectorAll('#zoom button').forEach(b => b.onclick = () => { const z = +b.dataset.z; const r = cv.getBoundingClientRect(); if (!z) fit(); else zoomAt(r.width/2, r.height/2, z); });
+  document.querySelectorAll('#zoom button').forEach(b => b.onclick = () => { const z = +b.dataset.z; const r = cv.getBoundingClientRect(); if (!z) fit(); else zoomAt(r.width*.65, r.height*(mobile.matches ? .32 : .5), z); });
   function hit(mx, my){
     const TT = matchMedia('(pointer:coarse)').matches; let best = null, bd = TT ? 24 : 14;
     C.forEach(c => { const d = Math.hypot(sx(c.lon)-mx, sy(c.lat)-my); if (d < bd){ bd = d; best = { city:c.i }; } });
@@ -529,7 +657,10 @@
     $('#kWorth').textContent = W(G.netWorth());
     const h = S.history[S.history.length-1]; const net = h ? h.net : 0;
     $('#kNet').textContent = (net>0?'+':'') + W(net); $('#kNet').className = financialClass(net);
-    $('#kLit').textContent = `${Object.keys(S.lit).length} / ${C.length}`;
+    const lit = Object.keys(S.lit);
+    const overseas = lit.filter(i => C[i]?.abroad).length;
+    $('#kLit').textContent = `${lit.length - overseas} / ${cityTotals.domestic}`;
+    $('#kLitOverseas').textContent = `海外 ${overseas} / ${cityTotals.overseas}`;
     document.querySelectorAll('#speed button').forEach(b => {
       const active = +b.dataset.s === ui.speed;
       b.classList.toggle('on', active);
@@ -629,8 +760,8 @@
         <h2>${C[e.a].name} — ${C[e.b].name}</h2>
         <div class="muted">${e.dist} km · 地形系数 ${e.terrain}${(()=>{ const h = HexMap.edgeTerrain(C[e.a], C[e.b]); return ` · 沿线地形 ×${h.factor}（最难路段：${h.worst}）`; })()}${e.plateau ? ' · <span class="gold">高原线路</span>' : ''}${e.line ? ' · ' + e.line : ''}</div>
         ${e.xb || e.abroad ? `<div class="muted">${e.xb ? '跨境' : '境外'} · ${e.country}${G.edgeLock(e) ? ` · <span class="neg">${G.lockText(e)}</span>` : ''}</div>` : ''}
-        <div class="table-scroll" tabindex="0" role="region" aria-label="数据表" style="margin-top:8px"><table class="t"><tr><th>产权</th><th class="r">速度</th><th>电气化</th><th class="r">过轨费(客)</th></tr>
-        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${t.owner === 'S' && e.abroad ? e.country + '国家铁路' : ownerName(t.owner)}${t.status==='build'?' <span class="tag">在建</span>':''}<div class="dim">${trackUse(t)}</div></td><td class="num r">${t.v}</td><td>${t.elec?'是':'否'}</td><td class="num r">${t.owner==='P'?'—':G.feeRate(t,'pax',y).toFixed(0)+' 元/列km'}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">尚无线路，可抢先修建</td></tr>'}
+        <div class="table-scroll" tabindex="0" role="region" aria-label="数据表" style="margin-top:8px"><table class="t"><tr><th>产权</th><th class="r">速度</th><th>电气化</th><th class="r">过轨费（客）</th></tr>
+        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${t.owner === 'S' && e.abroad ? e.country + '国家铁路' : ownerName(t.owner)}${t.status==='build'?' <span class="tag">在建</span>':''}<div class="dim">${trackUse(t)}</div></td><td class="num r">${t.v}</td><td>${t.elec?'是':'否'}</td><td class="num r">${t.owner==='P'?'—':G.feeRate(t,'pax',y).toFixed(0)+' 元/列·公里'}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">尚无线路，可抢先修建</td></tr>'}
         </table></div><div class="sep"></div><div class="muted">修建或改造请在右侧「建设」页操作。</div>`;
       box.classList.add('show');
     } else box.classList.remove('show');
@@ -690,8 +821,16 @@
     body.innerHTML = ({ overview:pOverview, build:pBuild, routes:pRoutes, fleet:pFleet, market:pMarket, contracts:pContracts, estate:pEstate, mgmt:pMgmt, finance:pFinance, policy:pPolicy, projects:pProjects, rivals:pRivals })[ui.tab]();
     body.scrollTop = st;
     if (focused) document.getElementById(focused)?.focus({ preventScroll:true });
-    if (ui.tab === 'finance'){ requestAnimationFrame(drawFinanceCharts); setTimeout(drawFinanceCharts, 60); setTimeout(drawStockChart, 70); }
-    if (ui.tab === 'overview'){ requestAnimationFrame(drawMiniChart); setTimeout(drawMiniChart, 60); }
+    schedulePanelCharts();
+  }
+  let chartFrame = null;
+  function schedulePanelCharts(){
+    if (chartFrame !== null || !['finance','overview'].includes(ui.tab)) return;
+    chartFrame = requestAnimationFrame(() => {
+      chartFrame = null;
+      if (ui.tab === 'overview') drawMiniChart();
+      if (ui.tab === 'finance'){ drawFinanceCharts(); drawStockChart(); }
+    });
   }
 
   function foldCard(group, id, summary, detail, className = 'card', color = ''){
@@ -736,6 +875,8 @@
       ${Object.entries(regions).map(([k,v]) => `<div class="region"><span>${k}</span><div class="bar"><i style="width:${v.lit/v.n*100}%"></i></div><span class="num r muted">${v.lit}/${v.n}</span></div>`).join('')}
       <h3>成就</h3>
       ${G.ACH.map(a => `<div class="ach ${S.achievements[a.id]?'on':''}"><span class="ic">${icon('medal', S.achievements[a.id] ? '已达成' : '未达成')}</span><div><b>${a.name}</b> <span class="muted">${a.desc}</span></div><span class="num dim" style="margin-left:auto">${S.achievements[a.id]||''}</span></div>`).join('')}
+      ${ui.toastDetails.length ? `<h3 id="toastDetails">提示消息</h3><div class="newslist">${ui.toastDetails.map(n =>
+        `<div class="n ${n.kind}"><b>${esc(n.title)}</b><div class="muted">${measureText(n.text)}</div></div>`).join('')}</div>` : ''}
       <h3>大事记</h3>
       <div class="newslist">${S.news.slice(0,14).map(n => `<div class="n ${n.kind}"><span class="d">${n.date}</span><b>${esc(n.title)}</b><div class="muted">${measureText(n.text)}</div></div>`).join('')}</div>`;
   }
@@ -859,7 +1000,7 @@
         const sample = run[0] || trains[0];
         const plan = G.econ[sample?.id]?.plan;
         return `<div class="row route-actions"><button class="btn sm" data-act="selRoute" data-id="${r.id}">${ui.selRoute===r.id?'取消高亮':'地图高亮'}</button>
-          <button class="btn sm danger" data-act="delRoute" data-id="${r.id}">${ui.confirm==='r'+r.id?'确认删除?':'删除'}</button></div>
+          <button class="btn sm danger" data-act="delRoute" data-id="${r.id}">${ui.confirm==='r'+r.id?'确认删除？':'删除'}</button></div>
         ${routeTrainsHTML(trains)}
         <div class="stops" style="margin:8px 0">${(() => { const st = G.stopFlags(r); return r.stops.map((c,k) => { const town = C[c].tier > 1, lv = G.stationLv(c); const mid = k > 0 && k < r.stops.length-1;
           const cls = st[k] ? 's' : 's pass'; const tip = !town ? '大城市车站' : lv < 1 ? '未开设车站，列车通过' : mid ? (st[k] ? '停靠（点击改为通过）' : '通过（点击改为停靠）') : '始发/终到站';
@@ -1175,6 +1316,9 @@
     chart(c, H.map(h => { const t = G.ym(h.d); return `${t.y}.${t.m}`; }), [{ color:financeColors.neutral, data:H.map(h => h.p), movement:true, fill:true }], v => v.toFixed(1)); }
 
   // —— 购车 ——
+  const modelName = m => m.en && m.en.trim() !== m.name.trim() ? m.en : '';
+  const vehicleScale = m => `<div><label>轴式</label><b style="font-size:11px">${esc(m.axle)}</b></div>`;
+  const modelNote = note => measureText(note.replace(/(\p{Script=Han})(?=\d)|(\d)(?=\p{Script=Han})|((?:km\/h|km|kW|MW|mph)\b)(?=\p{Script=Han})/gu, '$& '));
   function pMarket(){
     const S = G.S; const y = G.ym(S.day).y; const f = ui.mf;
     const chip = (k, v, n) => `<button class="chip ${f[k]===v?'on':''}" data-act="mf" data-k="${k}" data-v="${v}">${n}</button>`;
@@ -1202,16 +1346,16 @@
       html += `<div class="tcard ${av?'':'na'}" id="tc_${m.id}">
         <div class="art">${art(m.id)}<span class="flag">${m.country}</span><span class="yr">${m.year}–${m.end>=G.FAR_END?'':m.end}</span></div>
         <div class="body">
-          <div class="row sb model-heading"><div class="model-title"><div class="model-identity"><span class="name clip-name" title="${esc(m.name)}">${esc(m.name)}</span>${av && y - m.year <= 1 ? ' <span class="tag green">新车</span>' : ''}${soon ? ` <span class="tag red" title="${m.end} 年底停止接受订购，已有车辆照常运营">${m.end === y ? '今年停产' : '即将停产 · ' + m.end}</span>` : ''}${m.design ? ' <span class="tag">自主设计</span>' : ''}</div><span class="en clip-name" title="${esc(m.en)}">${esc(m.en)}</span></div><span class="tag ${m.use==='pax'?'blue':'green'}">${useName[m.use]} · ${powerName(m)}</span></div>
+          <div class="row sb model-heading"><div class="model-title"><div class="model-identity"><span class="name clip-name" title="${esc(m.name)}">${esc(m.name)}</span>${av && y - m.year <= 1 ? ' <span class="tag green">新车</span>' : ''}${soon ? ` <span class="tag red" title="${m.end} 年底停止接受订购，已有车辆照常运营">${m.end === y ? '今年停产' : '即将停产 · ' + m.end}</span>` : ''}${m.design ? ' <span class="tag">自主设计</span>' : ''}</div>${modelName(m) ? `<span class="en clip-name" title="${esc(m.en)}">${esc(m.en)}</span>` : ''}</div><span class="tag ${m.use==='pax'?'blue':'green'}">${useName[m.use]} · ${powerName(m)}</span></div>
           <div class="specs">
             <div><label>最高速度</label><b>${m.vmax} km/h</b></div>
             <div><label>功率</label><b>${m.power.toLocaleString()} kW</b></div>
             <div><label>${m.use==='pax'?'定员':'牵引定数'}</label><b>${capTxt}</b></div>
-            <div><label>轴式</label><b style="font-size:11px">${m.axle}</b></div>
+            ${vehicleScale(m)}
           </div>
-          <div class="note">${m.note}<br><span class="dim">制造：${m.maker}${needElec?' · 需电气化线路':''}${m.tilt?' · 摆式车体：普速/快速线上可提速20%':''}${m.plateau?' · 高原适应型':''}${m.fuel==='h2'?' · 不需要电气化':''}</span>${succHTML}</div>
+          <div class="note">${modelNote(m.note || '')}<br><span class="dim">制造：${m.maker}${needElec?' · 需电气化线路':''}${m.tilt?' · 摆式车体：普速/快速线上可提速20%':''}${m.plateau?' · 高原适应型':''}${m.fuel==='h2'?' · 不需要电气化':''}</span>${succHTML}</div>
           <div class="buyrow">
-            <div class="price"><span class="num gold" style="font-size:15px">${fmtY(p.total)}</span><div class="dim pbrk">${p.consist ? `<span>机车 ${W(p.loco)}</span><span>默认编组 ${p.dc.map(x => G.carById[x.id].name + '×' + x.n).join('、')} ${W(p.consist)}</span>` : '<span>固定编组</span>'}<span>${p.tariff ? '含关税 ' + pct(p.tariff) + ' · ' : ''}运行成本 ${(m.run*1.3*G.cpi(y)).toFixed(0)} 元/列km</span></div></div>
+            <div class="price"><span class="num gold" style="font-size:15px">${fmtY(p.total)}</span><div class="dim pbrk">${p.consist ? `<span>机车 ${W(p.loco)}</span><span>默认编组 ${p.dc.map(x => G.carById[x.id].name + '×' + x.n).join('、')} ${W(p.consist)}</span>` : '<span>固定编组</span>'}<span>${p.tariff ? '含关税 ' + pct(p.tariff) + ' · ' : ''}运行成本 ${(m.run*1.3*G.cpi(y)).toFixed(0)} 元/列·公里</span></div></div>
             ${av ? `<div class="buyact"><select id="br_${m.id}" data-lazy="buy">${buyOptsLazy}</select><button class="btn primary sm" data-act="buy" data-m="${m.id}">购买</button></div>` : `<span class="tag" ${m.year > y ? '' : 'title="已有车辆照常运营；想再添同款可去二手车市场"'}>${m.year > y ? m.year + ' 年上市' : '已停产（' + m.end + '）· 可找二手'}</span>`}
           </div>
         </div></div>`;
@@ -1230,8 +1374,8 @@
     L.forEach(o => { const m = G.trainById[o.model]; const succ = G.successorOf(m);
       const capTxt = m.use==='pax' ? `${m.cap} 人` : `${m.cap.toLocaleString()} t`;
       html += `<div class="tcard"><div class="art">${art(m.id)}<span class="flag">${m.country}</span><span class="yr">车龄 ${o.age} 年</span></div><div class="body">
-        <div class="row sb model-heading"><div class="model-title"><div class="model-identity"><span class="name clip-name" title="${esc(m.name)}">${esc(m.name)}</span> ${eraBadge(G.modelEra(m))}</div><span class="en clip-name">${esc(m.en)} · 卖方 ${esc(G.sellerName(o.seller))}</span></div><span class="tag ${m.use==='pax'?'blue':'green'}">${useName[m.use]} · ${powerName(m)}</span></div>
-        <div class="specs"><div><label>最高速度</label><b>${m.vmax} km/h</b></div><div><label>${m.use==='pax'?'定员':'牵引定数'}</label><b>${capTxt}</b></div><div><label>距上次大修</label><b>${o.so.toFixed(1)} 年</b></div><div><label>同款新车价</label><b>${W(o.newP || o.price)}</b></div></div>
+        <div class="row sb model-heading"><div class="model-title"><div class="model-identity"><span class="name clip-name" title="${esc(m.name)}">${esc(m.name)}</span> ${eraBadge(G.modelEra(m))}</div><span class="en clip-name">${modelName(m) ? esc(m.en) + ' · ' : ''}卖方 ${esc(G.sellerName(o.seller))}</span></div><span class="tag ${m.use==='pax'?'blue':'green'}">${useName[m.use]} · ${powerName(m)}</span></div>
+        <div class="specs"><div><label>最高速度</label><b>${m.vmax} km/h</b></div><div><label>${m.use==='pax'?'定员':'牵引定数'}</label><b>${capTxt}</b></div><div><label>距上次大修</label><b>${o.so.toFixed(1)} 年</b></div><div><label>同款新车价</label><b>${W(o.newP || o.price)}</b></div>${vehicleScale(m)}</div>
         <div class="note">${o.cars && o.cars.length ? '随车编组：' + o.cars.map(x => (G.carById[x.id]||{name:x.id}).name + '×' + x.n).join('、') : '固定编组'}${succ ? `<br><span class="dim">同级别新车：${esc(succ.name)}${G.available(succ) ? '（在售）' : '（' + succ.year + ' 年上市）'}</span>` : ''}</div>
         <div class="buyrow"><div class="price"><span class="num gold" style="font-size:15px">${fmtY(o.price)}</span><div class="dim pbrk"><span>约为同款新车价的 ${pct(o.price / (o.newP || o.price))}</span><span>还剩 ${Math.max(0, Math.ceil(o.expire - S.day))} 天下架</span></div></div>
           <div class="buyact"><select id="bu_${o.id}" data-lazy="buy">${buyOptsLazy}</select><button class="btn primary sm" data-act="buyUsed" data-id="${o.id}">购买</button></div></div></div></div>`; });
@@ -1256,7 +1400,7 @@
       <label class="row" style="gap:6px;margin:8px 0;align-items:center"><span style="width:72px">车型名称</span><input id="dzName" maxlength="14" placeholder="留空自动命名" value="${esc(d.name || '')}" style="flex:1;min-width:0"></label>
       <dl class="kv"><dt>最高速度</dt><dd>${b.vmax} → <b>${q.vmax}</b> km/h</dd><dt>功率</dt><dd>${b.power.toLocaleString()} → <b>${q.power.toLocaleString()}</b> kW</dd>
         <dt>${p.use === 'pax' ? '定员' : '牵引定数'}</dt><dd>${capOf(b, b.cap)} → <b>${capOf(b, q.cap)}</b>${p.use === 'pax' && !G.isUnit(b) ? '（机车定员取决于编组，功率决定能挂几节）' : ''}</dd>
-        <dt>运行成本</dt><dd>${b.run} → <b>${q.run}</b> 元/列km（1985 年价）</dd><dt>新车价格</dt><dd>${fmtY(q.price * 1e4)}</dd>
+        <dt>运行成本</dt><dd>${b.run} → <b>${q.run}</b> 元/列·公里（1985 年价）</dd><dt>新车价格</dt><dd>${fmtY(q.price * 1e4)}</dd>
         <dt>研发需要</dt><dd><b>${q.pts}</b> 研发点${rd.lastGain ? `，按目前投入约 ${Math.ceil(q.pts / rd.lastGain)} 个月` : rd.lv ? '' : '（<span class="neg">目前研发投入为 0</span>）'}</dd></dl>
       <div class="row" style="justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn" data-m="close">取消</button><button class="btn primary" data-dz="ok">立项</button></div>`); }
   function pCars(chip, catBar){
@@ -1376,15 +1520,17 @@
       { color:financeColors.expense, data:H.map(h => h.opex) },
       { color:financeColors.neutral, data:H.map(h => h.net), signed:true } ]); }
   function chart(c, labels, series, fmt){
-    const r = c.getBoundingClientRect(); const dpr = window.devicePixelRatio || 1; c.width = r.width*dpr; c.height = r.height*dpr;
+    const r = c.getBoundingClientRect(); const dpr = canvasDpr(); c.width = r.width*dpr; c.height = r.height*dpr;
     const x = c.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0); const w = r.width, h = r.height, pl = 52, pr = 10, pt = 10, pb = 22;
     x.clearRect(0,0,w,h);
     if (labels.length < 2){ x.fillStyle = '#6d7f99'; x.font = '12px sans-serif'; x.fillText('数据积累中（每月结算后更新）', w/2-90, h/2); return; }
     let mn = 0, mx = 1; series.forEach(s => s.data.forEach(v => { mn = Math.min(mn, v); mx = Math.max(mx, v); }));
+    const useYi = Math.max(mx, -mn) >= 1e8;
+    const axisFmt = fmt || (v => (v / (useYi ? 1e8 : 1e4)).toLocaleString('zh-CN', { maximumFractionDigits:useYi ? 2 : 1 }) + (useYi ? '亿' : '万'));
     const span = (mx - mn) || 1; mx += span*0.08; if (mn < 0) mn -= span*0.08;
     const X = i => pl + (w-pl-pr) * i/(labels.length-1), Y = v => pt + (h-pt-pb) * (1 - (v-mn)/(mx-mn));
     x.font = '10px Menlo, monospace'; x.fillStyle = '#6d7f99'; x.strokeStyle = 'rgba(255,255,255,.06)'; x.lineWidth = 1;
-    for (let k = 0; k <= 4; k++){ const v = mn + (mx-mn)*k/4; const yy = Y(v); x.beginPath(); x.moveTo(pl, yy); x.lineTo(w-pr, yy); x.stroke(); x.fillText(Math.abs(v) < 1 ? '0' : (fmt || W)(v).replace(' ',''), 4, yy+3); }
+    for (let k = 0; k <= 4; k++){ const v = mn + (mx-mn)*k/4; const yy = Y(v); x.beginPath(); x.moveTo(pl, yy); x.lineTo(w-pr, yy); x.stroke(); x.fillText(axisFmt(v), 4, yy+3, pl - 7); }
     if (mn < 0){ x.strokeStyle = 'rgba(255,255,255,.25)'; x.beginPath(); x.moveTo(pl, Y(0)); x.lineTo(w-pr, Y(0)); x.stroke(); }
     const step = Math.ceil(labels.length / 6); labels.forEach((l,i) => { if (i % step === 0) x.fillText(l, X(i)-14, h-6); });
     series.forEach(s => {
@@ -1424,7 +1570,7 @@
         <div class="stat"><label>车辆进口关税</label><b>${pct(S.mods.tariff)}</b></div>
         <div class="stat"><label>年度进口额度</label><b>${S.mods.importQuota>=99?'不限':S.mods.importQuota+' 列'}</b></div>
         <div class="stat"><label>建设补贴（全国/中西部/高铁）</label><b>${pct(S.mods.buildSubsidy)} / ${pct(S.mods.westSubsidy)} / ${pct(S.mods.hsrSubsidy)}</b></div>
-        <div class="stat"><label>国铁过轨基准费</label><b>${G.stateFeeBase(y).toFixed(1)}</b><small> 元/列km</small></div>
+        <div class="stat"><label>国铁过轨基准费</label><b>${G.stateFeeBase(y).toFixed(1)}</b><small> 元/列·公里</small></div>
         <div class="stat"><label>物价指数 (1985=1)</label><b>${G.cpi(y).toFixed(2)}</b></div>
         <div class="stat"><label>贷款年利率</label><b>${(G.rate(y)*100).toFixed(2)}%</b></div>
       </div>
@@ -1464,7 +1610,7 @@
     const head = `<div class="row sb"><b>${esc(f.name)}</b><span class="dim">${C[f.a].name}—${C[f.b].name} · ${f.km.toLocaleString()} km</span></div>`;
     const cities = `<div class="dim" style="font-size:11px;margin:3px 0">沿线 ${f.path.filter(c => !G.cities[c].tier || G.cities[c].tier === 1).map(c => C[c].name).join('、')}</div>`;
     if (f.st === 'bid') return `<div class="card gov">${head}${cities}
-      <dl class="kv"><dt>经营期</dt><dd>${G.FR_YEARS} 年，独家开行社会资本旅客列车</dd><dt>中标好处</dt><dd>沿线城市之间客源份额 +25%，国铁过轨费减半</dd><dt>履约要求</dt><dd>每月在干线上开行不少于 ${f.minTrips} 趟旅客列车</dd><dt>年费底价</dt><dd class="num">${W(f.reserve)}元</dd><dt>我方报价</dt><dd class="num ${f.bid?'gold':''}">${f.bid ? W(f.bid) + '元/年' : '未投标'}</dd><dt>开标</dt><dd>${Math.max(0, Math.ceil((f.close - S.day)/30))} 个月后</dd></dl>
+      <dl class="kv"><dt>经营期</dt><dd>${G.FR_YEARS} 年，享有干线客运优先经营权</dd><dt>中标好处</dt><dd>沿线城市之间客源份额 +25%，国铁过轨费减半</dd><dt>履约要求</dt><dd>每月在干线上开行不少于 ${f.minTrips} 趟旅客列车</dd><dt>年费底价</dt><dd class="num">${W(f.reserve)}元</dd><dt>我方报价</dt><dd class="num ${f.bid?'gold':''}">${f.bid ? W(f.bid) + '元/年' : '未投标'}</dd><dt>开标</dt><dd>${Math.max(0, Math.ceil((f.close - S.day)/30))} 个月后</dd></dl>
       <div class="row" style="justify-content:flex-end;gap:6px;margin-top:6px;flex-wrap:wrap">${f.bid ? `<button class="btn sm" ${A}="frBid" data-id="${f.uid}" data-v="0">撤回报价</button>` : ''}${[1, 1.25, 1.5].map(k => `<button class="btn sm ${Math.abs(f.bid - f.reserve*k) < 1 ? 'primary' : ''}" ${A}="frBid" data-id="${f.uid}" data-v="${k}">报价 ${k === 1 ? '底价' : '×' + k}</button>`).join('')}</div>
       <div class="dim" style="font-size:11px;margin-top:4px">报价越高越容易中标；商誉高也有加分。同业公司也会参与竞标。</div></div>`;
     if (f.st === 'held') { const me = f.holder === 'P', left = Math.max(0, Math.ceil((f.until - S.day)/365*10)/10);
@@ -1651,9 +1797,47 @@
 
   // ---------------- 提示与弹窗 ----------------
   const snd = (n, k) => { if (window.Sfx) Sfx.play(n, k); };
-  function toast(title, text, kind, symbol){ const el = document.createElement('div'); el.className = 'toast ' + (kind||''); el.innerHTML = `<b>${symbol ? icon(symbol) + ' ' : ''}${esc(title)}</b><span>${esc(text)}</span>`; $('#toast').prepend(el); setTimeout(() => el.remove(), 4200); while ($('#toast').children.length > 4) $('#toast').lastChild.remove(); }
+  const liveToasts = new Set();
+  ui.toastDetails = [];
+  const moreToasts = document.createElement('button');
+  moreToasts.type = 'button';
+  moreToasts.className = 'toast toast-more';
+  function renderToasts(){
+    const batch = [...liveToasts].reverse();
+    const visible = batch.slice(0, batch.length > 2 ? 1 : 2).map(n => n.el);
+    if (batch.length > 2){
+      moreToasts.textContent = `还有 ${batch.length - 1} 条消息`;
+      visible.push(moreToasts);
+    }
+    const wrap = $('#toast');
+    for (const child of [...wrap.children]) if (!visible.includes(child)) child.remove();
+    visible.forEach((el, i) => { if (wrap.children[i] !== el) wrap.insertBefore(el, wrap.children[i] || null); });
+  }
+  moreToasts.onclick = () => {
+    ui.toastDetails = [...liveToasts].reverse();
+    ui.tab = 'overview';
+    if (window.innerWidth <= 760 && sheet === 0) setSheet(1);
+    renderTabs();
+    renderPanel(true);
+    $('#toastDetails')?.scrollIntoView({ block:'start' });
+  };
+  function toast(title, text, kind, symbol){
+    const el = document.createElement('div');
+    el.className = 'toast ' + (kind || '');
+    el.innerHTML = `<b>${symbol ? icon(symbol) + ' ' : ''}${esc(title)}</b><span>${esc(text)}</span>`;
+    const item = { title, text, kind:kind || '', el };
+    liveToasts.add(item);
+    renderToasts();
+    setTimeout(() => { if (liveToasts.delete(item)) renderToasts(); }, 4200);
+  }
+  let guideAfterPolicy = null;
+  function maybeStartGuide(){
+    if (guideAfterPolicy !== G.S || ui.modalOpen || popupQueue.length) return;
+    guideAfterPolicy = null;
+    Tutorial.start();
+  }
   function modal(html, wide){ $('#modalBox').className = 'box' + (wide ? ' wide' : ''); $('#modalBox').innerHTML = html; $('#modal').classList.add('show'); ui.modalOpen = true; }
-  function closeModal(){ $('#modal').classList.remove('show'); ui.modalOpen = false; }
+  function closeModal(){ $('#modal').classList.remove('show'); ui.modalOpen = false; if (guideAfterPolicy) queueMicrotask(maybeStartGuide); }
   $('#modal').addEventListener('click', e => {
     const dz = e.target.closest('[data-dz]');
     if (dz && !dz.disabled && ui.dz){ const k = dz.dataset.dz; const nm = $('#dzName'); if (nm) ui.dz.name = nm.value;
@@ -1667,7 +1851,7 @@
       consistModal(); return; }
     const b = e.target.closest('[data-m]'); if (!b) return; const k = b.dataset.m;
     if (k === 'close'){ closeModal(); }
-    if (k === 'new'){ const name = ($('#coInput') && $('#coInput').value.trim()) || '华夏铁道实业'; const tut = $('#tutChk') ? $('#tutChk').checked : false; G.newGame(name); afterLoad(); closeModal(); setSpeed(0); showPolicyQueue(); if (window.Tutorial) { if (tut) Tutorial.start(); else Tutorial.stop(false); } }
+    if (k === 'new'){ const name = ($('#coInput') && $('#coInput').value.trim()) || '华夏铁道实业'; const tut = $('#tutChk') ? $('#tutChk').checked : false; G.newGame(name); afterLoad(); if (window.Tutorial && tut) guideAfterPolicy = G.S; closeModal(); setSpeed(0); showPolicyQueue(); if (window.Tutorial && !tut) Tutorial.stop(false); }
     if (k === 'tut'){ closeModal(); setSpeed(0); if (window.Tutorial) Tutorial.start(); }
     if (k === 'continue'){ if (G.load('auto')) { afterLoad(); closeModal(); setSpeed(0); } else toast('无法继续', G.lastLoadErr || '自动存档无法读取', 'bad'); }
     if (k === 'load') saveModal(true);
@@ -1725,7 +1909,7 @@
     else if (p.type === 'gov'){ const g = (G.S.gov||[]).find(x => x.id === p.id); if (!g || g.st !== 'offer') { showPolicyQueue(); return; } setSpeed(0); modal(`<div class="stamp">政府任务 · ${G.GOV[g.k].name}</div>${govCard(g, true)}`); }
     else if (p.type === 'govEnd'){ const g = (G.S.gov||[]).find(x => x.id === p.id); if (g) toast(g.st === 'done' ? '任务完成：' + g.title : g.st === 'part' ? '任务基本完成：' + g.title : '任务未完成：' + g.title, g.st === 'done' ? `奖励 ${W(g.cash)}元，商誉 +${G.GOV[g.k].rep}` : g.st === 'part' ? `完成 ${Math.round(g.prog/g.target*100)}%，部分奖励 ${W(g.paid||0)}元` : `完成 ${Math.round(g.prog/g.target*100)}%，商誉 −${G.GOV[g.k].fail}`, g.st === 'fail' ? 'bad' : 'good'); showPolicyQueue(); }
     else if (p.type === 'franch'){ const f = (G.S.franch||[]).find(x => x.uid === p.uid); if (!f || f.st !== 'bid') { showPolicyQueue(); return; } setSpeed(0); modal(`<div class="stamp">招标公告 · 干线经营权</div>${frCard(f, true)}<div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn" data-m="resume">暂不投标</button></div>`); }
-    else if (p.type === 'franchWin'){ const f = (G.S.franch||[]).find(x => x.uid === p.uid); setSpeed(0); modal(`<div class="stamp">中标通知</div><h1>${f ? esc(f.name) : '干线经营权'} 中标</h1><p>${f ? `本公司以每年 <b>${W(f.fee)}元</b> 中标，${G.FR_YEARS} 年内独家经营 ${C[f.a].name}—${C[f.b].name} 干线客运。沿线城市之间的客源份额提高 25%，本公司旅客列车在该干线上的国铁过轨费减半。<br><br>履约要求：每月在干线上开行不少于 <b>${f.minTrips}</b> 趟旅客列车（中标后有 6 个月准备期），连续 3 次不达标将被收回经营权。` : ''}</p><div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" data-m="toProj">查看项目</button><button class="btn primary" data-m="resume">继续经营</button></div>`); }
+    else if (p.type === 'franchWin'){ const f = (G.S.franch||[]).find(x => x.uid === p.uid); setSpeed(0); modal(`<div class="stamp">中标通知</div><h1>${f ? esc(f.name) : '干线经营权'} 中标</h1><p>${f ? `本公司以每年 <b>${W(f.fee)}元</b> 中标，取得 ${C[f.a].name}—${C[f.b].name} 干线客运的 ${G.FR_YEARS} 年优先经营权。沿线城市之间的客源份额提高 25%，本公司旅客列车在该干线上的国铁过轨费减半。<br><br>履约要求：每月在干线上开行不少于 <b>${f.minTrips}</b> 趟旅客列车（中标后有 6 个月准备期），连续 3 次不达标将被收回经营权。` : ''}</p><div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" data-m="toProj">查看项目</button><button class="btn primary" data-m="resume">继续经营</button></div>`); }
     else if (p.type === 'franchLose'){ toast('未能中标', `${p.name} 拿下了干线经营权。`, 'bad'); showPolicyQueue(); }
     else if (p.type === 'newModels'){ setSpeed(0); const T = G.trainById, mini = id => { const m = T[id]; return `<div class="nm"><span class="thumb">${art(id, 's')}</span><div><b>${m.name}</b> <span class="dim">${m.country} · ${useName[m.use]}</span><br><span class="dim" style="font-size:11px">${m.vmax} km/h · ${m.use==='pax' ? m.cap + ' 人' : m.cap.toLocaleString() + ' t'} · ${W(G.trainPrice(m).total)}</span></div></div>`; };
       modal(`<div class="stamp">${p.y} 年 · 车辆市场</div><h1>${p.nw.length ? '新车上市' : '车型换代'}</h1>${p.nw.length ? `<p>今年有 ${p.nw.length} 款新车型开始接受订购。</p><div class="nmgrid">${p.nw.map(mini).join('')}</div>` : ''}
@@ -1746,7 +1930,7 @@
       <div class="hero">${hero}</div>
       <p>1985&nbsp;年，“运力紧张”是全国铁路的头号难题：车站里挤满了买不到票的旅客，煤炭在坑口堆积如山。为此，国家出台《铁路经营权开放试点暂行办法》，允许社会资本组建铁路公司——修线、买车、开行列车，或者向国铁租用线路过轨运营。</p>
       <p class="dim" style="font-size:12px">本作以中国铁路发展史为背景：大提速、入世、路网规划、政企分开等是真实历史节点；公司、试点制度、人物及各项数值效果均为虚构设定。</p>
-      <p>你将经营一家首批试点企业，从三十多年的改革浪潮中一路走来：价格闯关、大提速、入世、高铁时代……点亮全国 ${C.filter(c => !c.abroad).length} 座城市，再把列车开到蒙古、俄罗斯、中亚和东南亚，<span class="keep-together">打造属于你的铁路帝国。</span></p>
+      <p>你将经营一家首批试点企业，从三十多年的改革浪潮中一路走来：价格闯关、大提速、入世、高铁时代……在国内 ${cityTotals.domestic} 座、海外 ${cityTotals.overseas} 座城市铺开铁路网络，<span class="keep-together">打造属于你的铁路帝国。</span></p>
       <div class="row start-company"><label class="muted" for="coInput">公司名称</label><input id="coInput" value="华夏铁道实业" maxlength="12"></div>
       <label class="row start-options"><input type="checkbox" id="tutChk" ${window.Tutorial && Tutorial.seen() ? '' : 'checked'}> 开启新手引导（自由经营，约 10 分钟）</label>
       <div class="start-actions">
@@ -1784,7 +1968,7 @@
       <li>「线路」页可为每条客运线路选择直达、特快、普快或夜行卧铺。直达只停起讫两站，特快只停大城市；夜行卧铺适合 6–16 小时的行程，需要在编组里多挂硬卧、软卧。</li>
       <li>在大城市修建机务段（城市详情或「车队」页），半径范围内的本公司列车就近检修：可用率更高、维修费更低、大修停运更短。每座机务段有检修容量。</li></ul>
       <h3>车型换代</h3><ul><li>每年 1 月都会有新车型上市，到 2020 年前后可以买到复兴号。车型停产后仍可运营；停产超过 8 年列为淘汰车型。</li><li>旧型车在干线上票价打折、维修费上涨，但在<b>支线</b>（起讫有二三线城市，或全程 200 km 以内）上没有影响，维修还更省。旧车也可以出售，或者卖给前来求购的同业。</li></ul>
-      <h3>重大项目</h3><ul><li>1998 年起可竞标国铁干线客运经营权，中标后独家经营若干年，需履行开行承诺。</li><li>后期可以投资跨海大桥、海底隧道、川藏铁路等超级工程，或到海外投标修建高铁，获取长期收益。</li></ul>
+      <h3>重大项目</h3><ul><li>1998 年起可竞标国铁干线客运优先经营权，有效期为 ${G.FR_YEARS} 年，需履行开行承诺。</li><li>后期可以投资跨海大桥、海底隧道、川藏铁路等超级工程，或到海外投标修建高铁，获取长期收益。</li></ul>
       <h3>操作</h3><ul><li>拖拽平移、滚轮缩放地图；空格暂停；1–4 切换速度；Esc 取消。</li><li>手机上单指拖动地图、双指缩放，轻点城市或走廊查看详情；面板顶部的「面板」和「地图」可切换地图与面板的大小。</li><li>每月自动存档。「存档」里有 5 个存档位，还可以把进度导出成文件、在别的设备上导入。</li></ul>
       <div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" data-m="tut">重新播放新手引导</button><button class="btn primary" data-m="resume">回到游戏</button></div>`, true);
   }
@@ -1830,18 +2014,19 @@
   $('#bNew').onclick = startScreen;
 
   function clearTrainFloaters(){
-    ui.floaters = [];
+    ui.floaters.clear();
     ui.lastEvt = G.events[G.events.length - 1]?.at || 0;
   }
-  function afterLoad(){ if (window.Tutorial && Tutorial.active()) Tutorial.stop(false); ui.selCity = ui.selEdge = ui.selRoute = ui.odRoute = ui.confirm = null; ui.openDetails = {}; ui.idleOnly = false; ui.mode = 'view'; ui.draft = []; ui.newsTop = G.S.news[0]; ui.sig = ''; clearTrainFloaters(); renderTabs(); renderPanel(true); renderInspector(); renderRouteBar(); renderTop(); renderTicker(); popupQueue = G.popups(); }
+  function afterLoad(){ guideAfterPolicy = null; liveToasts.clear(); ui.toastDetails = []; renderToasts(); if (window.Tutorial && Tutorial.active()) Tutorial.stop(false); ui.selCity = ui.selEdge = ui.selRoute = ui.odRoute = ui.confirm = null; ui.openDetails = {}; ui.idleOnly = false; ui.mode = 'view'; ui.draft = []; ui.newsTop = G.S.news[0]; ui.sig = ''; clearTrainFloaters(); renderTabs(); renderPanel(true); renderInspector(); renderRouteBar(); renderTop(); renderTicker(); popupQueue = G.popups(); }
   function renderTicker(){ const S = G.S; $('#tickerItems').innerHTML = S.news.slice(0,8).map(n => `<span><b>${n.date}</b> ${esc(n.title)} — ${esc(n.text)}</span>`).join(''); }
 
   // ---------------- 主循环 ----------------
-  let last = performance.now(), tAcc = 0;
+  let last = performance.now(), tAcc = 0, monthlyRender = null;
   function loop(now){
     requestAnimationFrame(loop);   // 先登记下一帧：即使本帧出错，主循环也不会停
     const dt = Math.min(0.1, (now - last)/1000); last = now;
     const S = G.S;
+    const lastYM = S?.lastYM;
     if (S && !ui.modalOpen && ui.speed > 0 && !S.over){
       let hours = dt * SPEEDS[ui.speed] * 24;
       try { while (hours > 0){ const h = Math.min(4, hours); G.tick(h); hours -= h; } }
@@ -1849,12 +2034,20 @@
     }
     if (S){
       const ps = G.popups(); if (ps.length){ popupQueue.push(...ps); showPolicyQueue(); }
-      // 弹窗打开时游戏暂停、地图被半透明模糊背景盖住：不必逐帧重画（模糊背景每帧重算很费显卡）
+      // 弹窗打开时游戏暂停，地图只需保留当前帧。
       if (!ui.modalOpen || !ui.mapDrawn) { drawMap(now); ui.mapDrawn = true; }
+      if (lastYM !== S.lastYM && monthlyRender !== S){
+        monthlyRender = S;
+        requestAnimationFrame(() => {
+          if (monthlyRender !== S) return;
+          monthlyRender = null;
+          if (G.S === S) renderPanel(false);
+        });
+      }
       tAcc += dt;
-      if (tAcc > 0.25){ tAcc = 0; renderTop(); renderPanel(false);
+      if (tAcc > 0.25){ tAcc = 0; renderTop(); if (monthlyRender !== S) renderPanel(false);
         if (S.news[0] !== ui.newsTop){ const fresh = []; for (const n of S.news){ if (n === ui.newsTop) break; fresh.push(n); } ui.newsTop = S.news[0];
-          fresh.slice(0,3).forEach(n => { if (['good','bad','warn','state','rival'].includes(n.kind) && !n.title.startsWith('成就')) toast(n.title, n.text, n.kind==='bad'||n.kind==='warn' ? 'bad' : n.kind==='good' ? 'good' : ''); });
+          fresh.reverse().forEach(n => { if (['good','bad','warn','state','rival'].includes(n.kind) && !n.title.startsWith('成就')) toast(n.title, n.text, n.kind==='bad'||n.kind==='warn' ? 'bad' : n.kind==='good' ? 'good' : ''); });
           renderTicker(); if (ui.selCity !== null || ui.selEdge !== null) renderInspector(); }
       }
     }

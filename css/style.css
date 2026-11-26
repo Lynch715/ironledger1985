@@ -35,6 +35,7 @@ select:focus,input:focus{outline:1px solid var(--gold)}
 .kpi{flex:none;padding:4px clamp(6px,.8vw,12px);border-left:1px solid var(--line);white-space:nowrap}
 .kpi label{display:block;font-size:11px;color:var(--text3)}
 .kpi span{font-family:var(--mono);font-size:15px;font-weight:600}
+#kLitOverseas{display:block;font-size:10px;line-height:1.1;color:inherit;opacity:.8}
 .topbtns{display:flex;flex:none;gap:6px}
 @media (min-width: 761px) and (max-width: 1100px){
   .brand{min-width:0}
@@ -140,7 +141,7 @@ table.t tr:hover td{background:rgba(255,255,255,.02)}
 #zoom button{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:8px;background:rgba(13,20,32,.85);border:1px solid var(--line2);color:var(--text);font-size:18px}
 
 /* 弹窗 */
-#modal{position:fixed;inset:0;background:rgba(5,8,14,.72);display:none;align-items:center;justify-content:center;z-index:50;backdrop-filter:blur(3px)}
+#modal{position:fixed;inset:0;background:rgba(5,8,14,.72);display:none;align-items:center;justify-content:center;z-index:50}
 #modal.show{display:flex}
 #modal .box{width:min(640px,92vw);max-height:88vh;overflow:auto;background:var(--panel);border:1px solid var(--line2);border-radius:16px;box-shadow:var(--shadow);padding:22px 26px}
 #modal .box.wide{width:min(860px,94vw)}
@@ -150,8 +151,9 @@ table.t tr:hover td{background:rgba(255,255,255,.02)}
 #modal ul{color:var(--text);line-height:1.9;padding-left:20px}
 .hero{border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#e9d7b0,#f3e6c9 60%,#d9c59b);margin:10px 0 14px;padding:6px 10px 0}
 .hero svg{width:100%;display:block}
-#toast{position:fixed;right:calc(clamp(460px,31vw,540px) + 20px);top:70px;display:flex;flex-direction:column;gap:8px;z-index:40;pointer-events:none}
-.toast{background:rgba(22,34,52,.97);border:1px solid var(--line2);border-left:3px solid var(--gold);border-radius:8px;padding:8px 12px;box-shadow:var(--shadow);min-width:240px;max-width:340px;animation:tin .25s ease-out}
+#toast{position:absolute;left:12px;bottom:46px;width:min(340px,calc(100% - 210px));display:flex;flex-direction:column;align-items:flex-start;gap:8px;z-index:8;pointer-events:none}
+.toast{background:rgba(22,34,52,.97);border:1px solid var(--line2);border-left:3px solid var(--gold);border-radius:8px;padding:8px 12px;box-shadow:var(--shadow);max-width:100%;animation:tin .25s ease-out}
+.toast-more{pointer-events:auto;color:inherit;font-size:12px;text-align:start;min-height:32px}
 .toast.bad{border-left-color:var(--red)} .toast.good{border-left-color:var(--green)}
 .toast.gain{border-left-color:var(--gain)} .toast.loss{border-left-color:var(--loss)}
 .toast b{display:block;font-size:12.5px}
@@ -271,8 +273,15 @@ canvas.chart{width:100%;height:190px;display:block;background:var(--bg2);border:
   #inspector{position:fixed;left:6px;right:6px;bottom:calc(6px + env(safe-area-inset-bottom));width:auto;max-height:60vh;max-height:60dvh;z-index:30;padding:12px 12px}
   #inspector .x{font-size:22px;padding:4px 8px;top:2px;right:4px}
   #routebar{top:40px;left:6px;right:6px;transform:none;max-width:none;flex-wrap:wrap;gap:6px;padding:6px 8px}
-  #toast{left:8px;right:8px;top:auto;bottom:calc(12px + env(safe-area-inset-bottom));align-items:stretch}
-  .toast{min-width:0;max-width:none}
+  #toast{left:8px;right:58px;bottom:8px;width:auto;gap:4px;align-items:stretch}
+  body.m-map #toast{bottom:calc(38px + env(safe-area-inset-bottom));left:136px}
+  body.m-full #panel{position:relative}
+  body.m-full #toast{right:8px;bottom:calc(8px + env(safe-area-inset-bottom))}
+  .toast{display:flex;align-items:center;gap:6px;min-width:0;padding:4px 8px;white-space:nowrap}
+  .toast :is(b,span){min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .toast b{flex:0 1 auto;max-width:52%}
+  #toast .toast span{flex:1;white-space:nowrap;overflow-wrap:normal}
+  #toast .toast-more{min-height:28px}
   /* 弹窗 */
   #modal .box,#modal .box.wide{width:calc(100vw - 16px);max-height:calc(100dvh - 20px);padding:16px 14px;border-radius:4px}
   #modal h1{font-size:18px}
@@ -493,7 +502,6 @@ table.t.fin-table :is(th,td).r{width:29%}
 .sound-preview{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:10px 0}
 #coach{width:min(340px,calc(100vw - clamp(460px,31vw,540px) - 28px));max-height:calc(100dvh - 125px);overflow:auto}
 #coach .ct-foot{flex-wrap:wrap}
-#toast .toast{min-inline-size:0;max-inline-size:min(340px,100%);min-width:min(240px,100%)}
 @keyframes tin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
 @media (min-width:761px) and (max-width:900px){
@@ -584,7 +592,6 @@ table.t.fin-table :is(th,td).r{width:29%}
   #coach{font-size:14px}
   #coach .ct-x{display:grid;place-items:center;padding:0}
   #coach .ct-foot{gap:8px}
-  #toast .toast{max-inline-size:100%}
 }
 
 /* ---- 新建线路操作栏：长线路时按钮始终可见（长线确认修复） ---- */
