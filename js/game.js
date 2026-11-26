@@ -226,9 +226,10 @@ const Game = (() => {
         const segs = []; ev.edges.forEach(([a,b]) => { const ch = chainOf(a, b); for (let k = 0; k < ch.length-1; k++) segs.push([ch[k], ch[k+1]]); });
         segs.forEach(([a,b]) => {
           const e = edgeByPair[cityIdx[a]+'-'+cityIdx[b]]; if (!e) return;
-          const playerBetter = S.tracks.some(tr => tr.e===e.i && tr.owner==='P' && tr.v >= ev.v);
+          const playerTrack = ownTrackFor(e.i, ev.v);
+          const playerBetter = playerTrack && (playerTrack.upg ? playerTrack.upg.v : playerTrack.v) >= ev.v;
           if (playerBetter) { pre++; return; }
-          const ex = S.tracks.find(tr => tr.e===e.i && tr.owner==='S' && tr.v >= ev.v);
+          const ex = S.tracks.find(tr => tr.e===e.i && tr.owner==='S' && isHighSpeed(tr.v) === isHighSpeed(ev.v) && tr.v >= ev.v);
           if (ex) return;
           S.tracks.push({ id:S.nid++, e:e.i, owner:'S', v:ev.v, elec:!!ev.elec, status:'ok', line:ev.name, cost:0, built:S.day });
           built++;
@@ -257,6 +258,11 @@ const Game = (() => {
   // 跨境与境外走廊：对应的开放政策出台前，本公司不能修建，也不能开行列车
   function edgeLock(e){ if (!e || !e.pol || (S && S.unlock && S.unlock[e.pol])) return null; return policyById[e.pol] || { title:'对外开放政策', y:'', m:'' }; }
   function lockText(e){ const p = edgeLock(e); return p ? `${e.xb ? '口岸' : '境外线路'}尚未对本公司开放（需政策 ${p.title}${p.y ? `，${p.y} 年` : ''}）` : ''; }
+  const isHighSpeed = v => v >= 250;
+  // 旧档可能有普速改高铁的在建工程，按竣工后的用途预留位置。
+  function ownTrackFor(eid, v){
+    return S.tracks.find(t => t.e === eid && t.owner === 'P' && isHighSpeed(t.upg ? t.upg.v : t.v) === isHighSpeed(v));
+  }
   function trackUsable(tr, model, e){
     if (tr.status !== 'ok') return false;
     if (e.pol && edgeLock(e)) return false;
@@ -264,7 +270,7 @@ const Game = (() => {
     if ((model.type === 'electric' || model.type === 'emu') && !tr.elec) return false;
     if (e.plateau && !model.plateau && model.type !== 'electric' && model.type !== 'emu') return false;
     if (e.plateau && !model.plateau) return false;
-    if (tr.v >= 250 && model.use === 'freight') return false; // 高速线为客运专线
+    if (isHighSpeed(tr.v) && model.use === 'freight') return false;
     return true;
   }
   function pickTrack(e, model, pref){
@@ -358,7 +364,7 @@ const Game = (() => {
         let why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} 无可用轨道`;
         if (blocked[e.i]) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} 因「${blocked[e.i]}」中断`;
         if (any && (model.type==='electric'||model.type==='emu')) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} 未电气化`;
-        if (any && model.use === 'freight' && S.tracks.some(x => x.e === e.i && x.status === 'ok' && x.v >= 250) && !S.tracks.some(x => x.e === e.i && x.status === 'ok' && x.v < 250)) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} 只有高速客运专线，不开行货车`;
+        if (any && model.use === 'freight' && !S.tracks.some(x => x.e === e.i && x.status === 'ok' && !isHighSpeed(x.v))) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} 只有高速客运专线，请在建设页补建客货共用线`;
         if (any && e.plateau && !model.plateau) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} 为高原线路，需高原型机车`;
         if (edgeLock(e)) why = `${cities[r.stops[k]].name}—${cities[r.stops[k+1]].name} ${lockText(e)}`;
         return { ok:false, why };
@@ -726,10 +732,13 @@ const Game = (() => {
   }
   function trackFeeIncome(y){
     let total = 0;
-    S.tracks.forEach(tr => {
-      if (tr.owner !== 'P' || tr.status !== 'ok') return;
+    const own = S.tracks.filter(t => t.owner === 'P' && t.status === 'ok');
+    const trackCount = new Map();
+    own.forEach(t => trackCount.set(t.e, (trackCount.get(t.e) || 0) + 1));
+    own.forEach(tr => {
       const e = edges[tr.e];
-      const era = 1 + (y - 1985) * 0.05, elas = Math.pow(S.feeMul, -0.8); // 需求弹性 −0.8：提价减少过轨列车，但收费收入仍随费率温和上升
+      // 走廊的背景过轨车流由已通车的自有线路分担。
+      const era = 1 + (y - 1985) * 0.05, elas = Math.pow(S.feeMul, -0.8) / trackCount.get(e.i);
       const rate = feeRate(Object.assign({}, tr, { owner:'X' }), 'pax', y) / 1.15 * S.feeMul;
       const rv = {}; let trains = 0;
       S.rivals.forEach(r => { if (!r.active) return;
@@ -789,7 +798,7 @@ const Game = (() => {
           if (r.cash > cost * 0.5) {
             r.plan = { e:pick.e.i, cls:useCls, cost, at:S.day + 90 };
             const mine = pEdges.has(pick.e.i);
-            log('情报 · ' + def.name, `据悉，${def.name} 计划约 3 个月后开工修建 ${cities[pick.e.a].name}—${cities[pick.e.b].name}（${C.name}）。${mine ? '这段正是你列车经过的走廊，建成后你要向对方交过轨费。' : ''}若你抢先开工，对方计划将落空。`, mine ? 'bad' : 'rival');
+            log('情报 · ' + def.name, `据悉，${def.name} 计划约 3 个月后开工修建 ${cities[pick.e.a].name}—${cities[pick.e.b].name}（${C.name}）。${mine ? '这段正是你列车经过的走廊，使用对方线路时需交过轨费。' : ''}若你抢先开工修建同用途线路，对方计划将落空。`, mine ? 'bad' : 'rival');
             if (mine) pendingPopups.push({ type:'intel', rid:r.id, name:def.name, e:pick.e.i, cls:useCls });
           }
         }
@@ -960,12 +969,18 @@ const Game = (() => {
     return { cost: gross * (1 - sub), gross, sub, months: buildMonths(e, cls), elec, v:C.v, unit: unit*e.terrain*cpi(y)*(1-sub) };
   }
   function canBuildClass(cls){ return !!S.unlock[TRACK_CLASSES[cls].unlock]; }
+  function buildTrackBlock(e, cls){
+    if (!e) return '找不到该走廊';
+    if (e.sup && !S.tracks.some(t => t.e === e.i && t.status === 'ok')) return '超级工程通车后可增建并行线路';
+    if (edgeLock(e)) return lockText(e);
+    const v = TRACK_CLASSES[cls].v;
+    if (ownTrackFor(e.i, v)) return `该区段已建或在建自有${isHighSpeed(v) ? '高速客运专线' : '客货共用线'}`;
+    return '';
+  }
   function buildTrack(eid, cls, elec){
-    if (edges[eid] && edges[eid].sup && !S.tracks.some(x => x.e === eid)) return { ok:false, msg:'这条通道需要以超级工程立项修建' };
-    const e = edges[eid];
-    if (edgeLock(e)) return { ok:false, msg:lockText(e) };
+    const e = edges[eid]; const msg = buildTrackBlock(e, cls);
+    if (msg) return { ok:false, msg };
     if (!canBuildClass(cls)) return { ok:false, msg:'该等级尚未获得政策许可' };
-    if (S.tracks.some(x => x.e===eid && x.owner==='P')) return { ok:false, msg:'已拥有该走廊线路，可选择改造升级' };
     const q = buildQuote(e, cls, elec);
     if (S.cash < q.cost) return { ok:false, msg:'现金不足' };
     S.cash -= q.cost; S.month.build += q.cost;
@@ -975,17 +990,18 @@ const Game = (() => {
     recompute();
     return { ok:true };
   }
-  // 整段修建：一次性修建原走廊上尚未拥有的所有区段
+  // 整段修建：一次性补齐走廊上缺少所选用途线路的区段
   function groupQuote(gi, cls, elec){
-    const g = groups[gi]; const segs = g.edges.filter(i => !S.tracks.some(x => x.e===i && x.owner==='P'));
+    const g = groups[gi]; const v = TRACK_CLASSES[cls].v;
+    const segs = g.edges.filter(i => !ownTrackFor(i, v));
     let cost = 0, months = 0, km = 0; segs.forEach(i => { const q = buildQuote(edges[i], cls, elec); cost += q.cost; months = Math.max(months, q.months); km += edges[i].dist; });
     if (segs.length > 1) months = Math.ceil(months * 1.15);
-    return { segs, cost, months, km, v:TRACK_CLASSES[cls].v };
+    return { segs, cost, months, km, v };
   }
   function buildGroup(gi, cls, elec){
     { const lk = groups[gi] && groups[gi].edges.map(i => edges[i]).find(edgeLock); if (lk) return { ok:false, msg:lockText(lk) }; }
     if (!canBuildClass(cls)) return { ok:false, msg:'该等级尚未获得政策许可' };
-    const q = groupQuote(gi, cls, elec); if (!q.segs.length) return { ok:false, msg:'该走廊已全部建成' };
+    const q = groupQuote(gi, cls, elec); if (!q.segs.length) return { ok:false, msg:'该走廊各区段均已建或在建所选用途的线路' };
     if (S.cash < q.cost) return { ok:false, msg:'现金不足' };
     if (cls >= 2) elec = true;
     { const j = (S.jv || []).find(o => o.gi === gi); if (j) q.segs.forEach(i => j.paid = (j.paid || 0) + buildQuote(edges[i], cls, elec).gross * j.sub); }
@@ -1007,6 +1023,7 @@ const Game = (() => {
   }
   function upgradeTrack(trId, cls, elec){
     const tr = S.tracks.find(x => x.id===trId); if (!tr || tr.owner!=='P' || tr.status!=='ok' || tr.upg) return { ok:false, msg:'无法改造' };
+    if (isHighSpeed(tr.v) !== isHighSpeed(TRACK_CLASSES[cls].v)) return { ok:false, msg:'请新建并行的高速客运专线，保留既有客货共用线' };
     if (!canBuildClass(cls)) return { ok:false, msg:'该等级尚未获得政策许可' };
     const q = upgradeQuote(tr, cls, elec);
     if (q.v < tr.v || (q.v === tr.v && q.elec === tr.elec)) return { ok:false, msg:'没有需要改造的内容' };
@@ -1661,9 +1678,15 @@ const Game = (() => {
     const r = S.rivals.find(x => x.id === rid); const def = RIVALS.find(x => x.id === rid);
     S.cash -= q.net; S.month.build += q.net;
     S.tracks.filter(x => x.owner === rid).forEach(tr => {
-      const mine = S.tracks.find(x => x.owner === 'P' && x.e === tr.e);
-      if (mine) { if (tr.status === 'ok') { mine.v = Math.max(mine.v, tr.v); mine.elec = mine.elec || tr.elec; mine.sig = Math.max(sigOf(mine), sigOf(tr)); if (mine.status === 'build') { mine.status = 'ok'; } } tr.dead = true; }
-      else { tr.owner = 'P'; tr.cost = (tr.cost || 0) * 0.85; }
+      const mine = ownTrackFor(tr.e, tr.v);
+      if (!mine) { tr.owner = 'P'; tr.cost = (tr.cost || 0) * 0.85; return; }
+      tr.dead = true;
+      if (tr.status !== 'ok') return;
+      if (mine.upg) { mine.upg.v = Math.max(mine.upg.v, tr.v); mine.upg.elec ||= tr.elec; }
+      if (isHighSpeed(mine.v) === isHighSpeed(tr.v)) {
+        mine.v = Math.max(mine.v, tr.v); mine.elec ||= tr.elec;
+        mine.sig = Math.max(sigOf(mine), sigOf(tr)); mine.status = 'ok';
+      }
     });
     S.tracks = S.tracks.filter(x => !x.dead);
     if (r.stake && S.ipo) { S.ipo.shares -= r.stake; r.stake = 0; } r.plan = null; (S.wars || []).forEach(w => { if (w.rid === rid && !w.ended) w.ended = S.day; });
@@ -1781,7 +1804,7 @@ const Game = (() => {
     const lines = [];
     STATE_EVENTS.forEach((ev, k) => { if (k < STATE_EVENTS_BASE || S.stateEvents.includes(k) || !passed(ev)) return; S.stateEvents.push(k);
       if (ev.kind !== 'build') return;
-      ev.edges.forEach(([a, b]) => { const e = edgeByPair[cityIdx[a] + '-' + cityIdx[b]]; if (!e || S.tracks.some(x => x.e === e.i && x.owner === 'S' && x.v >= ev.v)) return;
+      ev.edges.forEach(([a, b]) => { const e = edgeByPair[cityIdx[a] + '-' + cityIdx[b]]; if (!e || S.tracks.some(x => x.e === e.i && x.owner === 'S' && isHighSpeed(x.v) === isHighSpeed(ev.v) && x.v >= ev.v)) return;
         S.tracks.push({ id:S.nid++, e:e.i, owner:'S', v:ev.v, elec:!!ev.elec, status:'ok', line:ev.name, cost:0, built:S.day }); });
       lines.push(ev.name); });
     S.mapVer = 2;
@@ -1884,7 +1907,7 @@ const Game = (() => {
     if (!r.plan) return false;
     if (S.day < r.plan.at) return true;
     const p = r.plan; r.plan = null; const e = edges[p.e];
-    if (S.tracks.some(x => x.e === e.i && x.owner === 'P')) {
+    if (ownTrackFor(e.i, TRACK_CLASSES[p.cls].v)) {
       log('抢线成功', `你抢先在 ${cities[e.a].name}—${cities[e.b].name} 开工，${def.name} 的修建计划落空。`, 'good'); addRep(1); return true; }
     if (S.tracks.some(x => x.e === e.i && x.owner === r.id)) return true;
     // 同业融资建线：首付 50%，其余为有息建设贷款（总负债不超过 2 倍现金规模）
@@ -2107,7 +2130,7 @@ const Game = (() => {
     cities, edges, edgeByPair, adj, trainById, policyById, ACH, TRACK_CLASSES, edgeLock, lockText, BASE_EDGES,
     get S(){ return S; }, carById, isUnit, consistStats, trailLimit, maxCars, carAvailable, carPrice, defaultConsist, setConsist, comfortMul, get econ(){ return econ; }, get pairInfo(){ return pairInfo; }, get stateTime(){ return stateTime; },
     newGame, tick, recompute, ym, dateOf, cpi, rate, popOf, freightOf, fmtW, clsOfV, feeRate, stateFeeBase,
-    buildQuote, buildTrack, upgradeQuote, upgradeTrack, canBuildClass, trainPrice, available, buyTrain, sellTrain, assignTrain,
+    buildQuote, buildTrack, buildTrackBlock, upgradeQuote, upgradeTrack, canBuildClass, isHighSpeed, trainPrice, available, buyTrain, sellTrain, assignTrain,
     createRoute, deleteRoute, routeAllowed, isTown, stationLv, stopFlags, stationQuote, buildStation, findPath, groups, groupQuote, buildGroup, toggleSkip, planTrain, netWorth, assets, creditLimit, borrow, repay, trainValue,
     paxDemand, freightDemand, captureShare, cargoSD, cargoCaps, get MF(){ return MF; }, get blocked(){ return blocked; }, activeEvents, events, popups: () => { const p = pendingPopups; pendingPopups = []; return p; },
     SCENARIOS, scenario, scnProgress, startScenario, board, scoreOf,

@@ -33,6 +33,9 @@
   const RIVAL = {}; RIVALS.forEach(r => RIVAL[r.id] = r);
   const ownerName = o => o==='P' ? (G.S.company) : o==='S' ? '国家铁路' : (RIVAL[o] ? RIVAL[o].name : o);
   const ownerColor = o => o==='P' ? P.own : o==='S' ? '#8095b0' : (RIVAL[o] ? RIVAL[o].color : '#999');
+  const trackUse = t => G.isHighSpeed(t.v) ? '高速客运专线' : '客货共用线';
+  const hasBothTrackUses = ts => ts.some(t => G.isHighSpeed(t.v)) && ts.some(t => !G.isHighSpeed(t.v));
+  const mapTrackRank = t => (t.status === 'ok' ? 4 : 0) + (t.owner === 'P' ? 2 : 0) + (G.isHighSpeed(t.v) ? 1 : 0);
   const artCache = {};
   // 车辆立绘：优先加载 img/trains/<车型ID>.png，没有图片时显示程序生成的SVG
   // 自主设计车型用平台立绘（m.img）
@@ -77,7 +80,7 @@
   function fit(){ const { width, height } = cv.getBoundingClientRect();
     const { x0, x1, y0, y1 } = fitBounds;
     view.s = fitScale(width,height); view.ox = width/2 - (x0+x1)/2*view.s; view.oy = (height-34)/2 - (y0+y1)/2*view.s; }
-  window.addEventListener('resize', () => { resize(); });
+  window.addEventListener('resize', () => { resize(); if (ui.selEdge !== null) renderInspector(); });
 
   const RIVERS = [
     { name:'长江', pts:[[91,33.2],[95,33],[97.5,32.5],[99.2,29.5],[100.2,26.9],[101.8,26.5],[103.3,28.2],[104.6,28.8],[105.8,28.9],[106.6,29.6],[108.4,30.7],[110.2,31],[111.3,30.7],[112.5,30.2],[113.6,29.8],[114.3,30.6],[115.4,29.9],[116.2,29.8],[117.1,30.5],[118.2,31.4],[118.8,32.1],[119.8,32.3],[120.9,31.9],[121.9,31.3]] },
@@ -203,8 +206,8 @@
     const selR = ui.selRoute && S.routes.find(r => r.id === ui.selRoute);
     E.forEach(e => {
       const a = C[e.a], b = C[e.b]; const x1 = sx(a.lon), y1 = sy(a.lat), x2 = sx(b.lon), y2 = sy(b.lat);
-      const ts = edgeTracks(e).filter(t => (t.owner==='S' ? ui.layers.state : t.owner==='P' ? true : ui.layers.rivals));
       const all = edgeTracks(e); if (e.sup && !all.length) return;
+      const ts = all.filter(t => (t.owner==='S' ? ui.layers.state : t.owner==='P' ? true : ui.layers.rivals));
       const locked = e.pol && G.edgeLock(e);
       if (!all.length){ if (ui.layers.cand || ui.selEdge === e.i){ ctx.setLineDash(locked ? [1,6] : [2,5]); ctx.strokeStyle = ui.selEdge===e.i ? '#ffd27a' : (e.abroad || e.xb) ? (locked ? 'rgba(140,70,50,.32)' : 'rgba(150,62,40,.6)') : P.cand; ctx.lineWidth = 1.2; line(x1,y1,x2,y2); ctx.setLineDash([]); } }
       if (e.xb && (all.length || ui.layers.cand)){ // 口岸标记：走廊中点画一道关卡短线
@@ -212,18 +215,23 @@
         ctx.strokeStyle = locked ? 'rgba(122,42,18,.35)' : 'rgba(122,42,18,.85)'; ctx.lineWidth = 1.6;
         line(mx - qx*k - (x2-x1)/L0*1.6, my - qy*k - (y2-y1)/L0*1.6, mx + qx*k - (x2-x1)/L0*1.6, my + qy*k - (y2-y1)/L0*1.6);
         line(mx - qx*k + (x2-x1)/L0*1.6, my - qy*k + (y2-y1)/L0*1.6, mx + qx*k + (x2-x1)/L0*1.6, my + qy*k + (y2-y1)/L0*1.6); }
-      const n = ts.length, dx = x2-x1, dy = y2-y1, L = Math.hypot(dx,dy) || 1, nx = -dy/L, ny = dx/L;
-      ts.forEach((t, k) => {
+      // 高铁和客货共用线共用走廊轮廓，点开后仍可查看各条线路。
+      const mixed = hasBothTrackUses(ts);
+      const shown = mixed ? [ts.reduce((best, t) => mapTrackRank(t) > mapTrackRank(best) ? t : best)] : ts;
+      const highSpeedOpen = mixed && ts.some(t => t.status === 'ok' && G.isHighSpeed(t.v));
+      const n = shown.length, dx = x2-x1, dy = y2-y1, L = Math.hypot(dx,dy) || 1, nx = -dy/L, ny = dx/L;
+      shown.forEach((t, k) => {
         const off = (k - (n-1)/2) * 3.4; const ox = nx*off, oy = ny*off;
+        const highSpeed = G.isHighSpeed(t.v) || highSpeedOpen;
         let col, lw;
-        if (t.owner === 'S'){ col = t.v >= 250 ? P.stateHsr : t.elec ? P.stateElec : P.state; lw = t.v >= 250 ? 2.4 : 1.6; }
-        else if (t.owner === 'P'){ col = P.own; lw = t.v >= 250 ? 4 : 3; }
-        else { col = ownerColor(t.owner); lw = t.v >= 250 ? 3 : 2.2; }
+        if (t.owner === 'S'){ col = highSpeed ? P.stateHsr : t.elec ? P.stateElec : P.state; lw = highSpeed ? 2.4 : 1.6; }
+        else if (t.owner === 'P'){ col = P.own; lw = highSpeed ? 4 : 3; }
+        else { col = ownerColor(t.owner); lw = highSpeed ? 3 : 2.2; }
         ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.globalAlpha = t.status === 'build' ? 0.75 : locked ? 0.4 : 1;
         if (t.status === 'build') ctx.setLineDash([6,4]);
         line(x1+ox, y1+oy, x2+ox, y2+oy); ctx.setLineDash([]);
-        if (t.v >= 250 && t.status === 'ok'){ ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 0.9; line(x1+ox,y1+oy,x2+ox,y2+oy); }
-        if (t.owner === 'P' && t.elec && t.v < 250 && t.status==='ok'){ ctx.strokeStyle = 'rgba(40,25,5,.8)'; ctx.lineWidth = 0.8; ctx.setLineDash([2,6]); line(x1+ox,y1+oy,x2+ox,y2+oy); ctx.setLineDash([]); }
+        if (highSpeed && t.status === 'ok'){ ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 0.9; line(x1+ox,y1+oy,x2+ox,y2+oy); }
+        if (t.owner === 'P' && t.elec && !highSpeed && t.status==='ok'){ ctx.strokeStyle = 'rgba(40,25,5,.8)'; ctx.lineWidth = 0.8; ctx.setLineDash([2,6]); line(x1+ox,y1+oy,x2+ox,y2+oy); ctx.setLineDash([]); }
         ctx.globalAlpha = 1;
       });
       if (ui.selEdge === e.i && all.length){ ctx.strokeStyle = 'rgba(255,210,122,.35)'; ctx.lineWidth = 12; line(x1,y1,x2,y2); }
@@ -477,6 +485,18 @@
     return be;
   }
   function segDist(px,py,x1,y1,x2,y2){ const dx=x2-x1, dy=y2-y1; const t = Math.max(0, Math.min(1, ((px-x1)*dx+(py-y1)*dy)/(dx*dx+dy*dy))); return Math.hypot(px-(x1+t*dx), py-(y1+t*dy)); }
+  function selectEdge(eid){
+    ui.selEdge = eid; ui.selCity = null; ui.tab = 'build';
+    if (window.innerWidth <= 760) setSheet(2);
+    renderTabs(); renderPanel(true); renderInspector();
+    $('#panelBody').scrollTop = 0;
+  }
+  function selectCity(ci){
+    const wasBuilding = ui.tab === 'build' && ui.selEdge !== null;
+    ui.selCity = ci; ui.selEdge = null;
+    if (wasBuilding) renderPanel(true);
+    renderInspector();
+  }
   function mapClick(e){
     const r = cv.getBoundingClientRect(); const h = hit(e.clientX - r.left, e.clientY - r.top);
     if (ui.mode === 'route'){
@@ -492,10 +512,8 @@
       if (!path) return toast('找不到可通行的轨道', `${C[last].name} 到 ${C[c].name} 之间没有连通的已建线路。可在「建设」页修建。`, 'bad');
       path.slice(1).forEach(v => ui.draft.push(v)); renderRouteBar(); return;
     }
-    if (!h){ ui.selCity = null; ui.selEdge = null; renderInspector(); return; }
-    if (h.city !== undefined){ ui.selCity = h.city; ui.selEdge = null; }
-    else { ui.selEdge = h.edge; ui.selCity = null; ui.tab = 'build'; renderTabs(); renderPanel(true); }
-    renderInspector();
+    if (h && h.edge !== undefined){ selectEdge(h.edge); return; }
+    selectCity(h ? h.city : null);
   }
 
   // ---------------- 顶栏 ----------------
@@ -524,7 +542,7 @@
     if (['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName)) return;
     if (e.code === 'Space'){ e.preventDefault(); setSpeed(ui.speed ? 0 : ui.lastSpeed || 1); }
     if (e.key >= '1' && e.key <= '4') setSpeed(+e.key);
-    if (e.key === 'Escape'){ if (ui.mode === 'route') cancelRoute(); else { ui.selCity = ui.selEdge = null; renderInspector(); } }
+    if (e.key === 'Escape'){ if (ui.mode === 'route') cancelRoute(); else selectCity(null); }
   });
 
   // 地图图层开关与图例
@@ -605,20 +623,20 @@
         <div class="sep"></div>
         <button class="btn primary sm" data-act="routeFrom" data-c="${c.i}">以此为起点新建运营线路</button>`;
       box.classList.add('show');
-    } else if (ui.selEdge !== null && ui.selEdge !== undefined){
+    } else if (ui.selEdge !== null && ui.selEdge !== undefined && window.innerWidth > 760){
       const e = E[ui.selEdge]; const ts = edgeTracks(e);
       box.innerHTML = `<button class="x" data-close aria-label="关闭详情">${icon('close')}</button>
         <h2>${C[e.a].name} — ${C[e.b].name}</h2>
         <div class="muted">${e.dist} km · 地形系数 ${e.terrain}${(()=>{ const h = HexMap.edgeTerrain(C[e.a], C[e.b]); return ` · 沿线地形 ×${h.factor}（最难路段：${h.worst}）`; })()}${e.plateau ? ' · <span class="gold">高原线路</span>' : ''}${e.line ? ' · ' + e.line : ''}</div>
         ${e.xb || e.abroad ? `<div class="muted">${e.xb ? '跨境' : '境外'} · ${e.country}${G.edgeLock(e) ? ` · <span class="neg">${G.lockText(e)}</span>` : ''}</div>` : ''}
         <div class="table-scroll" tabindex="0" role="region" aria-label="数据表" style="margin-top:8px"><table class="t"><tr><th>产权</th><th class="r">速度</th><th>电气化</th><th class="r">过轨费(客)</th></tr>
-        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${t.owner === 'S' && e.abroad ? e.country + '国家铁路' : ownerName(t.owner)}${t.status==='build'?' <span class="tag">在建</span>':''}</td><td class="num r">${t.v}</td><td>${t.elec?'是':'否'}</td><td class="num r">${t.owner==='P'?'—':G.feeRate(t,'pax',G.ym(S.day).y).toFixed(0)+' 元/列km'}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">尚无线路，可抢先修建</td></tr>'}
+        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${t.owner === 'S' && e.abroad ? e.country + '国家铁路' : ownerName(t.owner)}${t.status==='build'?' <span class="tag">在建</span>':''}<div class="dim">${trackUse(t)}</div></td><td class="num r">${t.v}</td><td>${t.elec?'是':'否'}</td><td class="num r">${t.owner==='P'?'—':G.feeRate(t,'pax',y).toFixed(0)+' 元/列km'}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">尚无线路，可抢先修建</td></tr>'}
         </table></div><div class="sep"></div><div class="muted">修建或改造请在右侧「建设」页操作。</div>`;
       box.classList.add('show');
     } else box.classList.remove('show');
   }
   function hav(a,b){ const R=6371,t=Math.PI/180; const dLa=(b.lat-a.lat)*t, dLo=(b.lon-a.lon)*t; const x=Math.sin(dLa/2)**2+Math.cos(a.lat*t)*Math.cos(b.lat*t)*Math.sin(dLo/2)**2; return 2*R*Math.asin(Math.sqrt(x)); }
-  $('#inspector').addEventListener('click', e => { if (e.target.closest('[data-close]')){ ui.selCity = ui.selEdge = null; renderInspector(); return; } act(e); });
+  $('#inspector').addEventListener('click', e => { if (e.target.closest('[data-close]')){ selectCity(null); return; } act(e); });
 
   // ---------------- 新建线路 ----------------
   function startRoute(first){ ui.mode = 'route'; ui.draft = first !== undefined ? [first] : []; ui.selCity = ui.selEdge = null; renderInspector(); cv.classList.add('routing'); renderRouteBar(); }
@@ -724,47 +742,76 @@
   function drawMiniChart(){ const c = $('#miniChart'); if (!c) return; const H = G.S.history.slice(-60);
     chart(c, H.map(h => `${h.y}.${h.m}`), [{ color:financeColors.neutral, data:H.map(h => h.worth), movement:true, fill:true }]); }
 
-  function signalHTML(tr){ const cur = G.sigOf(tr); const u = G.trackUtil[tr.id];
-    return `<h3>信号与通过能力</h3><div class="card"><dl class="kv"><dt>当前信号</dt><dd>${G.SIGNALS[cur].name}${tr.sigUpg ? ` <span class="tag blue">改造中 · ${Math.max(0,Math.ceil((tr.sigUpg.done-G.S.day)/30))}个月</span>` : ''}</dd>
+  function signalHTML(tr, suffix){ const cur = G.sigOf(tr); const u = G.trackUtil[tr.id];
+    return `<h3>信号与通过能力${suffix}</h3><div class="card"><dl class="kv"><dt>当前信号</dt><dd>${G.SIGNALS[cur].name}${tr.sigUpg ? ` <span class="tag blue">改造中 · ${Math.max(0,Math.ceil((tr.sigUpg.done-G.S.day)/30))}个月</span>` : ''}</dd>
       <dt>通过能力</dt><dd>${G.capOf(tr)} 列/日</dd>${u ? `<dt>当前利用率</dt><dd>${utilTag(tr.id)}（本公司 ${u.own.toFixed(1)} + 过轨 ${u.bg.toFixed(1)} 列/日）</dd>` : ''}</dl>
       ${G.SIGNALS.filter(x => x.id > cur).map(x => { const q = G.signalQuote(tr.id, x.id); return `<div class="row sb" style="padding:6px 0;border-top:1px solid var(--line)"><div><b>${x.name}</b> <span class="dim">${x.cap} 列/日 · ${x.desc}</span>${q.ok ? '' : `<br><span class="dim">${x.from} 年起可用</span>`}</div><div class="row"><span class="num">${q.ok ? fmtY(q.cost) : '—'}</span><button class="btn sm" data-act="signal" data-tr="${tr.id}" data-v="${x.id}" ${q.ok && !tr.sigUpg ? '' : 'disabled'}>改造</button></div></div>`; }).join('')}
       <div class="dim" style="font-size:11px;margin-top:4px">利用率超过 72% 开始晚点，超过 100% 严重拥堵：单程时间变长、每月趟数减少、正点率和满意度下降、事故风险上升。国铁线路的信号随年代自动升级。</div></div>`; }
 
   // —— 建设 ——
+  function buildOptionsHTML(e, ts){
+    if (G.edgeLock(e)) return '';
+    if (e.sup && !ts.some(t => t.status === 'ok')) return '<div class="hint">超级工程通车后可增建并行线路。请在「项目」页查看工程进度。</div>';
+
+    const g = G.groups[e.grp];
+    const choices = G.TRACK_CLASSES.map(cl => {
+      const here = !G.buildTrackBlock(e, cl.id);
+      const q = g && g.edges.length > 1 ? G.groupQuote(g.i, cl.id, ui.bElec) : null;
+      const group = q && q.segs.some(i => i !== e.i) ? q : null;
+      return { cl, here, group, ok:G.canBuildClass(cl.id) };
+    }).filter(o => o.here || o.group);
+    if (!choices.length) return '';
+
+    const selected = choices.find(o => o.ok && o.cl.id === ui.bCls) || choices.find(o => o.ok && o.here) || choices.find(o => o.ok);
+    let html = `<h3>修建自有线路</h3><div class="card">` + choices.map(o => {
+      const { cl, here, ok } = o, pol = G.policyById[cl.unlock];
+      const q = G.buildQuote(e, cl.id, ui.bElec);
+      return `<label class="row" style="padding:6px 0;border-bottom:1px solid var(--line);${ok?'':'opacity:.45'}">
+        <input type="radio" name="bCls" value="${cl.id}" ${ok?'':'disabled'} ${o === selected ? 'checked':''} data-act="bCls">
+        <div style="flex:1"><b>${cl.name}</b> <span class="dim">${cl.desc}</span>${ok ? (here ? '' : '<br><span class="dim">补建走廊其他区段</span>') : `<br><span class="dim">需政策：${pol.title}（${pol.y}年）</span>`}</div>
+        <div class="num r">${ok && here ? fmtY(q.cost) : '—'}<br><span class="dim">${ok && here ? q.months + ' 个月' : ''}</span></div></label>`;
+    }).join('');
+    if (selected){
+      const { cl, here, group } = selected;
+      html += `<label class="row" style="margin-top:8px"><input type="checkbox" data-act="bElec" ${ui.bElec || G.isHighSpeed(cl.v) ? 'checked':''} ${G.isHighSpeed(cl.v) ? 'disabled':''}> 同步电气化（高速线默认电气化）</label>`;
+      if (here){
+        const q = G.buildQuote(e, cl.id, ui.bElec);
+        html += `<div class="kv" style="margin-top:8px"><dt>单价</dt><dd>${q.unit.toFixed(1)} 万元/km</dd><dt>补贴</dt><dd>${pct(q.sub)}</dd><dt>总投资</dt><dd class="gold"><span class="measure">${fmtY(q.cost)}</span></dd><dt>可用现金</dt><dd><span class="measure">${fmtY(G.S.cash)}</span></dd></div>
+          ${fundBtn(q.cost, `data-act="build" data-e="${e.i}" data-c="${cl.id}"`, '开工建设（仅本区段）', 'btn primary', 'margin-top:10px;width:100%')}`;
+      }
+      if (group){
+        html += `<div class="build-group"><b>${C[g.a].name}—${C[g.b].name}</b><p class="muted"><span class="measure">${group.segs.length}&nbsp;段</span> · <span class="measure">${group.km}&nbsp;km</span> · <span class="measure">${fmtY(group.cost)}</span> · <span class="measure">${group.months}&nbsp;个月</span></p>${fundBtn(group.cost, `data-act="buildGrp" data-g="${g.i}" data-c="${cl.id}"`, '整段修建', 'btn', 'width:100%', true)}</div>`;
+      }
+    }
+    return html + '</div>';
+  }
+
   function pBuild(){
     const S = G.S; const y = G.ym(S.day).y;
     let html = '';
     if (ui.selEdge === null || ui.selEdge === undefined){
       html += `<div class="hint">在地图上 <b>点击两座城市之间的走廊</b>（实线为已建线路，虚线为可修建的走廊）以查看修建与改造选项。<br>拥有自有线路后，自己的列车免交过轨费，国铁与同业列车经过时还会向你付费。</div>`;
     } else {
-      const e = E[ui.selEdge]; const ts = edgeTracks(e); const mine = ts.find(t => t.owner==='P');
+      const e = E[ui.selEdge]; const ts = edgeTracks(e); const own = ts.filter(t => t.owner === 'P');
       html += `<h2>${C[e.a].name} — ${C[e.b].name} <span class="tag">${e.dist} km</span></h2>
         <div class="muted" style="margin-bottom:8px">地形系数 ${e.terrain}${e.west ? ' · 中西部' : ''}${e.plateau ? ' · <span class="gold">高原线路（需高原型机车）</span>' : ''}${e.xb ? ` · <span class="gold">跨境 · ${e.country}</span>（口岸通关${e.gauge ? '并换轮' : ''}，单程多 ${e.gauge ? 4 : 1.5} 小时）` : e.abroad ? ` · <span class="gold">境外 · ${e.country}</span>` : ''}</div>
         ${G.edgeLock(e) ? `<div class="hint">${icon('warning', '未开放')} ${G.lockText(e)}。政策出台前，这条走廊不能修建，也不能开行本公司列车。</div>` : (e.abroad || e.xb) ? `<div class="hint">境外与跨境线路不享受国内建设补贴${S.unlock.X4 ? '，可获丝路合作基金补贴 20%' : ''}；跨境旅客受签证限制，客流低于国内同等城市。</div>` : ''}
         <div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t"><tr><th>产权方</th><th class="r">最高速度</th><th>电气化</th><th class="r">过轨费 客/货</th></tr>
-        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${t.owner === 'S' && e.abroad ? e.country + '国家铁路' : t.owner === 'S' && e.xb ? '国家铁路（跨境联运）' : ownerName(t.owner)} ${t.status==='build'?`<span class="tag">在建 · ${Math.max(0,Math.ceil((t.done-S.day)/30))}个月</span>`:''}${t.upg?`<span class="tag blue">改造中</span>`:''}</td><td class="num r">${t.v} km/h</td><td>${t.elec ? icon('check', '已电气化') : '—'}</td><td class="num r">${G.feeRate(t,'pax',y).toFixed(0)} / ${G.feeRate(t,'freight',y).toFixed(0)}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">该走廊尚无任何线路 —— 抢先修建可独享并收取过轨费</td></tr>'}
+        ${ts.map(t => `<tr><td><span class="swatch" style="background:${ownerColor(t.owner)}"></span>${t.owner === 'S' && e.abroad ? e.country + '国家铁路' : t.owner === 'S' && e.xb ? '国家铁路（跨境联运）' : ownerName(t.owner)} ${t.status==='build'?`<span class="tag">在建 · ${Math.max(0,Math.ceil((t.done-S.day)/30))}个月</span>`:''}${t.upg?`<span class="tag blue">改造中</span>`:''}<div class="dim">${trackUse(t)}</div></td><td class="num r">${t.v} km/h</td><td>${t.elec ? icon('check', '已电气化') : '—'}</td><td class="num r">${G.feeRate(t,'pax',y).toFixed(0)} / ${G.isHighSpeed(t.v) ? '—' : G.feeRate(t,'freight',y).toFixed(0)}</td></tr>`).join('') || '<tr><td colspan="4" class="dim">该走廊尚无任何线路 —— 抢先修建可独享并收取过轨费</td></tr>'}
         </table></div><div class="dim" style="font-size:11px;margin-top:4px">过轨费单位：元/列·公里（按当年物价）</div>`;
-      if (!mine && !G.edgeLock(e)){
-        html += `<h3>修建自有线路</h3><div class="card">` + G.TRACK_CLASSES.map(cl => {
-          const ok = G.canBuildClass(cl.id); const q = G.buildQuote(e, cl.id, cl.id >= 2 || ui.bElec);
-          const pol = G.policyById[cl.unlock];
-          return `<label class="row" style="padding:6px 0;border-bottom:1px solid var(--line);${ok?'':'opacity:.45'}">
-            <input type="radio" name="bCls" value="${cl.id}" ${ok?'':'disabled'} ${ ((ui.bCls||0)===cl.id && ok) ? 'checked':''} data-act="bCls">
-            <div style="flex:1"><b>${cl.name}</b> <span class="dim">${cl.desc}</span>${ok?'':`<br><span class="dim">需政策：${pol.title}（${pol.y}年）</span>`}</div>
-            <div class="num r">${ok ? fmtY(q.cost) : '—'}<br><span class="dim">${ok ? q.months + ' 个月' : ''}</span></div></label>`; }).join('') +
-          `<label class="row" style="margin-top:8px"><input type="checkbox" data-act="bElec" ${ui.bElec?'checked':''}> 同步电气化（电力机车、动车组必需；高速线默认电气化）</label>
-          ${(() => { const q = G.buildQuote(e, ui.bCls||0, (ui.bCls||0) >= 2 || ui.bElec); return `<div class="kv" style="margin-top:8px"><dt>单价</dt><dd>${(q.unit).toFixed(1)} 万元/km</dd><dt>补贴</dt><dd>${pct(q.sub)}</dd><dt>总投资</dt><dd class="gold"><span class="measure">${fmtY(q.cost)}</span></dd><dt>可用现金</dt><dd><span class="measure">${fmtY(S.cash)}</span></dd></div>`; })()}
-          ${(() => { const q = G.buildQuote(e, ui.bCls||0, (ui.bCls||0) >= 2 || ui.bElec); return fundBtn(q.cost, `data-act="build" data-e="${e.i}"`, '开工建设（仅本区段）', 'btn primary', 'margin-top:10px;width:100%'); })()}
-          ${(() => { const g = G.groups[e.grp]; if (!g || g.edges.length < 2) return ''; const q = G.groupQuote(e.grp, ui.bCls||0, (ui.bCls||0) >= 2 || ui.bElec); if (q.segs.length < 2) return '';
-            return `<div class="build-group"><b>${C[g.a].name}—${C[g.b].name}</b><p class="muted"><span class="measure">${q.segs.length}&nbsp;段</span> · <span class="measure">${q.km}&nbsp;km</span> · <span class="measure">${fmtY(q.cost)}</span> · <span class="measure">${q.months}&nbsp;个月</span></p>${fundBtn(q.cost, `data-act="buildGrp" data-g="${g.i}"`, '整段修建', 'btn', 'width:100%', true)}</div>`; })()}</div>`;
-      }
-      if (mine && mine.status === 'ok') html += signalHTML(mine);
-      if (mine && mine.status === 'ok' && !mine.upg){
-        html += `<h3>改造自有线路</h3><div class="card">` + G.TRACK_CLASSES.filter(cl => cl.v >= mine.v).map(cl => {
-          const ok = G.canBuildClass(cl.id); const q = G.upgradeQuote(mine, cl.id, cl.id >= 2 || mine.elec || ui.bElec);
-          const same = cl.v === mine.v;
-          return `<div class="row sb" style="padding:6px 0;border-bottom:1px solid var(--line);${ok?'':'opacity:.45'}"><div><b>${same ? '仅电气化改造' : '升级为 ' + cl.name}</b><br><span class="dim">${ok ? q.months+' 个月' : '需政策：'+G.policyById[cl.unlock].title}</span></div>
-            <div class="row"><span class="num">${ok ? fmtY(q.cost) : '—'}</span><button class="btn sm" data-act="upgrade" data-tr="${mine.id}" data-c="${cl.id}" ${(!ok || (same && mine.elec)) ? 'disabled' : ''}>改造</button></div></div>`; }).join('') + `</div>`;
+      if (ts.some(t => G.isHighSpeed(t.v))) html += '<div class="hint">货车走普速或快速线。两类线路可以并行建设，地图共用一条走廊线。</div>';
+      else if (own.length) html += '<div class="hint">新建高速客运专线会保留原有客货共用线。</div>';
+      html += buildOptionsHTML(e, ts);
+      for (const tr of own.filter(t => t.status === 'ok')){
+        const suffix = own.length > 1 ? ` · ${trackUse(tr)}（${tr.v} km/h）` : '';
+        html += signalHTML(tr, suffix);
+        const upgrades = G.TRACK_CLASSES.filter(cl => G.isHighSpeed(cl.v) === G.isHighSpeed(tr.v) && (cl.v > tr.v || (cl.v === tr.v && !tr.elec)));
+        if (tr.upg || !upgrades.length) continue;
+        html += `<h3>改造自有线路${suffix}</h3><div class="card">` + upgrades.map(cl => {
+          const ok = G.canBuildClass(cl.id); const q = G.upgradeQuote(tr, cl.id, true);
+          const name = cl.v === tr.v ? '仅电气化改造' : '升级为 ' + cl.name + (tr.elec ? '' : '并电气化');
+          return `<div class="row sb" style="padding:6px 0;border-bottom:1px solid var(--line);${ok?'':'opacity:.45'}"><div><b>${name}</b><br><span class="dim">${ok ? q.months+' 个月' : '需政策：'+G.policyById[cl.unlock].title}</span></div>
+            <div class="row"><span class="num">${ok ? fmtY(q.cost) : '—'}</span><button class="btn sm" data-act="upgrade" data-tr="${tr.id}" data-c="${cl.id}" ${ok ? '' : 'disabled'}>改造</button></div></div>`; }).join('') + '</div>';
       }
     }
     // 自有线路清单
@@ -772,7 +819,7 @@
     html += `<h3>自有线路资产（${own.length} 段）</h3>`;
     if (!own.length) html += `<div class="dim">暂无</div>`;
     else html += `<div class="table-scroll" tabindex="0" role="region" aria-label="数据表"><table class="t"><tr><th>区段</th><th class="r">里程</th><th class="r">速度</th><th class="r">月过轨列数</th><th>状态</th></tr>
-      ${own.map(t => { const e = E[t.e]; return `<tr style="cursor:pointer" data-act="selEdge" data-e="${e.i}"><td>${C[e.a].name}—${C[e.b].name}</td><td class="num r">${e.dist}</td><td class="num r">${t.v}${t.elec ? icon('electric', '已电气化') : ''}</td><td class="num r">${t.usage ? t.usage.toFixed(0) : '—'}</td><td>${t.status==='build' ? `<span class="tag">在建 ${Math.max(0,Math.ceil((t.done-S.day)/30))}月</span>` : t.upg ? '<span class="tag blue">改造中</span>' : '<span class="tag green">运营</span>'}</td></tr>`; }).join('')}</table></div>`;
+      ${own.map(t => { const e = E[t.e]; return `<tr style="cursor:pointer" data-act="selEdge" data-e="${e.i}"><td>${C[e.a].name}—${C[e.b].name}<div class="dim">${trackUse(t)}</div></td><td class="num r">${e.dist}</td><td class="num r">${t.v}${t.elec ? icon('electric', '已电气化') : ''}</td><td class="num r">${t.usage ? t.usage.toFixed(0) : '—'}</td><td>${t.status==='build' ? `<span class="tag">在建 ${Math.max(0,Math.ceil((t.done-S.day)/30))}月</span>` : t.upg ? '<span class="tag blue">改造中</span>' : '<span class="tag green">运营</span>'}</td></tr>`; }).join('')}</table></div>`;
     return html;
   }
 
@@ -1525,11 +1572,11 @@
       case 'od': { const id = +b.dataset.id; ui.odRoute = ui.odRoute === id ? null : id; renderPanel(true); break; }
       case 'station': { const r = G.buildStation(+b.dataset.c, +b.dataset.lv); if (!r.ok) toast('无法开站', r.msg, 'bad'); else toast('车站开工', `${C[+b.dataset.c].name}站开始施工。`, 'good'); renderInspector(); renderPanel(true); break; }
       case 'skip': { G.toggleSkip(+b.dataset.id, +b.dataset.c); renderPanel(true); break; }
-      case 'buildGrp': { if (b.dataset.loan) G.borrow(+b.dataset.loan); const cls = ui.bCls||0; const r = G.buildGroup(+b.dataset.g, cls, cls >= 2 || !!ui.bElec); if (!r.ok) toast('无法开工', r.msg, 'bad'); else toast('整段开工', '整条走廊的各区段同时开工。', 'good'), snd('build'); renderPanel(true); break; }
+      case 'buildGrp': { if (b.dataset.loan) G.borrow(+b.dataset.loan); const r = G.buildGroup(+b.dataset.g, +b.dataset.c, !!ui.bElec); if (!r.ok) toast('无法开工', r.msg, 'bad'); else toast('整段开工', '缺少所选用途线路的区段同时开工。', 'good'), snd('build'); renderPanel(true); renderInspector(); break; }
       case 'newRoute': startRoute(); break;
-      case 'selEdge': ui.selEdge = +b.dataset.e; ui.selCity = null; ui.tab = 'build'; renderTabs(); renderInspector(); renderPanel(true); break;
-      case 'build': { if (b.dataset.loan) G.borrow(+b.dataset.loan); const r = G.buildTrack(+b.dataset.e, ui.bCls||0, (ui.bCls||0) >= 2 || !!ui.bElec); if (!r.ok) toast('无法开工', r.msg, 'bad'); else toast('开工建设', '工程已启动，可在建设页查看工期。', 'good'), snd('build'); renderPanel(true); renderInspector(); break; }
-      case 'upgrade': { const c = +b.dataset.c; const tr = S.tracks.find(t => t.id === +b.dataset.tr); const r = G.upgradeTrack(tr.id, c, c >= 2 || tr.elec || true); if (!r.ok) toast('无法改造', r.msg, 'bad'); renderPanel(true); break; }
+      case 'selEdge': selectEdge(+b.dataset.e); break;
+      case 'build': { if (b.dataset.loan) G.borrow(+b.dataset.loan); const r = G.buildTrack(+b.dataset.e, +b.dataset.c, !!ui.bElec); if (!r.ok) toast('无法开工', r.msg, 'bad'); else toast('开工建设', '工程已启动，可在建设页查看工期。', 'good'), snd('build'); renderPanel(true); renderInspector(); break; }
+      case 'upgrade': { const r = G.upgradeTrack(+b.dataset.tr, +b.dataset.c, true); if (!r.ok) toast('无法改造', r.msg, 'bad'); renderPanel(true); break; }
       case 'selRoute': { const id = +b.dataset.id; ui.selRoute = ui.selRoute === id ? null : id; renderPanel(true); break; }
       case 'delRoute': { const id = +b.dataset.id; if (ui.confirm === 'r'+id){ G.deleteRoute(id); ui.confirm = null; if (ui.selRoute===id) ui.selRoute = null; } else { ui.confirm = 'r'+id; setTimeout(() => { if (ui.confirm==='r'+id){ ui.confirm = null; renderPanel(true); } }, 3000); } renderPanel(true); break; }
       case 'buyFor': ui.buyRoute = +b.dataset.id; ui.tab = 'market'; renderTabs(); renderPanel(true); $('#panelBody').scrollTop = 0; break;
@@ -1639,7 +1686,7 @@
     if (k === 'govAcc'){ G.govAccept(+b.dataset.id); toast('接受任务', '可在「合同」页查看进度。', 'good'); go(); }
     if (k === 'govDec'){ G.govDecline(+b.dataset.id); go(); }
     if (k === 'war'){ G.warRespond(b.dataset.id, b.dataset.v); go(); }
-    if (k === 'intel'){ ui.selEdge = +b.dataset.e; ui.selCity = null; ui.tab = 'build'; renderTabs(); renderInspector(); closeModal(); setSpeed(0); renderPanel(true); if (window.innerWidth <= 760) setSheet(1); showPolicyQueue(); }
+    if (k === 'intel'){ closeModal(); setSpeed(0); selectEdge(+b.dataset.e); showPolicyQueue(); }
     if (k === 'dilute'){ const r = G.defendDilute(); if (!r.ok) { toast('无法增发', r.msg, 'bad'); return; } toast('定向增发完成', '同业持股比例已被摊薄。', 'good'); go(); }
     if (k === 'greenmail'){ const r = G.defendGreenmail(b.dataset.id); if (!r.ok) { toast('无法回购', r.msg, 'bad'); return; } toast('回购完成', '对方持股已全部注销。', 'good'); go(); }
     if (k === 'toRivals'){ ui.tab = 'rivals'; renderTabs(); closeModal(); setSpeed(0); renderPanel(true); showPolicyQueue(); }
