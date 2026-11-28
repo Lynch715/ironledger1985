@@ -11,7 +11,7 @@ const Tutorial = (() => {
       done:(S, ui) => ui.mode === 'route' || S.routes.length > 0 },
     { title:'选择经停城市', text:'在地图上<b>依次点击要经停的城市</b>（至少两座），系统会沿已有线路自动寻路。选好后点上方的<b>「完成」</b>。建议先选两座相距不远、客流旺盛的大城市，比如北京—天津。', hl:'#routebar',
       done:S => S.routes.length > 0 },
-    { title:'购买列车', text:'打开<b>「购车」</b>页，挑一款<b>客运</b>机车，比如 1985 年的<b>东风4B型</b>内燃机车（不需要电气化，京津线可以直接跑；韶山型电力机车要等线路电气化）。在下拉框里选刚建的线路，点<b>「购买」</b>，会自动配上一组硬座车厢。国产车约 30 天交付，交付后自动上线。', hl:() => document.querySelector('[data-act=buy]') ? '[data-act=buy]' : '#tabs [data-tab=market]',
+    { title:'购买列车', text:'打开<b>「购车」</b>页，挑一款<b>客运</b>机车，比如 1985 年的<b>东风4B型</b>内燃机车（不需要电气化，京津线可以直接跑；韶山型电力机车要等线路电气化）。在下拉框里选刚建的线路，点<b>「购买」</b>打开采购窗口，保留默认编组并<b>确认购车</b>，即可随车配上一组硬座车厢。国产车约 30 天交付，交付后自动上线。', hl:() => document.querySelector('[data-act=buy]') ? '[data-act=buy]' : '#tabs [data-tab=market]',
       done:S => S.trains.length > 0 },
     { title:'让时间走起来', text:'点顶部的<b>播放按钮</b>（或按空格键）。速度越快，一天过得越快。新车交付后会自动投入运营，地图上能看到它在跑。', hl:'#speed',
       // 首趟列车实际跑完一个单程才算完成

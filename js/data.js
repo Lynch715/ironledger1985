@@ -201,9 +201,13 @@ const TRAINS = [
     note:'交流传动客运电力机车，普速干线长途客车的主力。',
     art:{style:'cab', body:'#c8102e', stripe:'#ffd400', roof:'#6d767c', nose:'slant', len:1.0, axles:3, panto:true, num:'HXD3D 0610', coach:'#1e4c8f'} },
   { id:'NJ2', name:'NJ2型（高原）', en:'GE NJ2', country:'美国/中国', flag:'US', maker:'GE运输', year:2005, end:2012, type:'diesel', use:'freight',
-    vmax:120, power:3860, cap:3800, price:3600, run:28, weight:'138 t', axle:'C-C', plateau:true, imported:true,
-    note:'为高原铁路特别设计的交流传动内燃机车，具备增压补偿与制氧设备。',
+    vmax:120, power:3860, cap:3800, price:3600, run:28, weight:'138 t', axle:'C-C', plateau:true, dualUse:true, imported:true,
+    note:'为高原铁路特别设计的交流传动内燃机车，具备增压补偿与制氧设备。可选客运或货运编组。',
     art:{style:'cab', body:'#e9e7df', stripe:'#c0392b', roof:'#5c656b', nose:'slant', len:1.05, axles:3, num:'NJ2 0008'} },
+  { id:'NJ2G', name:'NJ2G型高原机车', en:'NJ2G', country:'中国', flag:'CN', maker:'高原机车联合工厂', year:2013, end:2100, type:'diesel', use:'freight',
+    vmax:120, power:4200, cap:4200, price:4200, run:27, weight:'138 t', axle:'C-C', plateau:true, dualUse:true, img:'NJ2',
+    note:'游戏中的国产高原改进型，2013年起长期供应。适合未电气化的高原铁路，可选客运或货运编组。',
+    art:{style:'cab', body:'#e9e7df', stripe:'#c0392b', roof:'#5c656b', nose:'slant', len:1.05, axles:3, num:'NJ2G'} },
   { id:'CRH1', name:'CRH1A', en:'CRH1A', country:'中国（加）', flag:'CN', maker:'青岛四方-庞巴迪', year:2007, end:2015, type:'emu', use:'pax',
     vmax:200, power:5300, cap:670, price:12000, run:5.5, weight:'420 t', axle:'动力分散',
     note:'引进技术国产化的8辆编组动车组，率先在城际线路运营。',
@@ -722,9 +726,9 @@ const STATE_EVENTS = [
 
 // 同业竞争者（虚构公司）
 const RIVALS = [
-  { id:'R1', name:'渤海路港实业', short:'渤海', color:'#3aa0ff', home:'天津', from:1985 },
-  { id:'R2', name:'南粤联合铁路', short:'南粤', color:'#ff6b6b', home:'广州', from:1986 },
-  { id:'R3', name:'西部开发铁路', short:'西部', color:'#b38cff', home:'西安', from:1992 },
+  { id:'R1', name:'渤海路港实业', short:'渤海', color:'#9a5b2e', home:'天津', from:1985 },
+  { id:'R2', name:'南粤联合铁路', short:'南粤', color:'#5e4b8b', home:'广州', from:1986 },
+  { id:'R3', name:'西部开发铁路', short:'西部', color:'#2f7f7a', home:'西安', from:1992 },
 ];
 
 // 年度物价指数（1985=1.00，近似）

@@ -58,10 +58,14 @@ const Game = (() => {
 
   // ---------- 编组 ----------
   const isUnit = m => m.type === 'emu' || m.type === 'dmu';       // 动车组：固定编组
+  const supportsUse = (m, use) => m.use === use || !!(m.dualUse && (use === 'pax' || use === 'freight'));
+  const modelForUse = (m, use) => m.dualUse && use === 'pax' ? { ...m, use } : m;
+  const trainUse = t => trainById[t.model].dualUse && t.service === 'pax' ? 'pax' : trainById[t.model].use;
+  const trainModel = t => modelForUse(trainById[t.model], trainUse(t));
   function trailLimit(m){ return m.use === 'freight' ? m.cap : Math.round(m.power * 0.38); } // 牵引重量上限(t)
   function maxCars(m){ return m.use === 'freight' ? 120 : 20; }
   function consistStats(t){
-    const m = trainById[t.model];
+    const m = trainModel(t);
     if (isUnit(m)) return { cap:m.cap, vmax:m.vmax, weight:0, limit:0, n:0, comfort:1, carPrice:0, unit:true };
     let cap = 0, w = 0, n = 0, vmax = m.vmax, cw = 0;
     (t.cars || []).forEach(x => { const c = carById[x.id]; if (!c || !x.n) return;
@@ -70,7 +74,7 @@ const Game = (() => {
     return { cap, vmax, weight:w, limit:trailLimit(m), n, unit:false };
   }
   function comfortMul(t, L){
-    const m = trainById[t.model]; if (m.use !== 'pax') return 1;
+    const m = trainModel(t); if (m.use !== 'pax') return 1;
     const y = ym(S.day).y;
     if (isUnit(m)) return m.comfort || (m.year >= 1995 ? 1.3 : 1.15); // 动车组为软座车厢
     let sw = 0, sv = 0;
@@ -78,7 +82,7 @@ const Game = (() => {
       sw += c.seats * x.n; sv += c.seats * x.n * (1 + (cf - 1) * Math.min(1, L / 600)); });
     return sw ? sv / sw : 1;
   }
-  function tmodel(t){ const m = trainById[t.model]; const cs = consistStats(t); return Object.assign({}, m, { cap:cs.cap, vmax:cs.vmax, nCars:cs.n }); }
+  function tmodel(t){ const m = trainModel(t); const cs = consistStats(t); return Object.assign({}, m, { cap:cs.cap, vmax:cs.vmax, nCars:cs.n }); }
   function carAvailable(c){ const y = ym(S.day).y; return y >= c.year && y <= c.end; }
   function carPrice(c){ const y = ym(S.day).y; return c.price * 1e4 * (cpi(y) / cpi(Math.max(1985, c.year))) * (c.imported ? 1 + S.mods.tariff : 1); }
   // 按线路沿途货源挑选最合适的货车厢
@@ -105,27 +109,89 @@ const Game = (() => {
     return [{ id:c.id, n }];
   }
   function consistCost(cars){ return (cars||[]).reduce((a,x) => a + carPrice(carById[x.id]) * x.n, 0); }
-  // 修改编组：新增车厢按现价购买，减少的车厢按 60% 回收
-  function setConsist(tid, cars){
-    const t = S.trains.find(t => t.id === tid); if (!t) return { ok:false, msg:'找不到列车' };
-    const m = trainById[t.model]; if (isUnit(m)) return { ok:false, msg:'动车组为固定编组' };
-    cars = cars.filter(x => x.n > 0);
-    for (const x of cars){ const c = carById[x.id]; if (!c || c.kind !== m.use) return { ok:false, msg:'车厢类型与机车用途不符' }; }
-    const tmp = Object.assign({}, t, { cars }); const cs = consistStats(tmp);
-    if (cs.n > maxCars(m)) return { ok:false, msg:`编组过长（上限 ${maxCars(m)} 辆）` };
-    if (cs.weight > cs.limit) return { ok:false, msg:`超出机车牵引能力（${Math.round(cs.weight)} t > ${cs.limit} t）` };
-    const old = {}; (t.cars||[]).forEach(x => old[x.id] = (old[x.id]||0) + x.n);
-    let cost = 0, refund = 0, importsNeeded = 0;
-    const ids = new Set([...Object.keys(old), ...cars.map(x => x.id)]);
-    ids.forEach(id => { const c = carById[id]; const nn = (cars.find(x => x.id===id)||{n:0}).n; const d = nn - (old[id]||0);
-      if (d > 0){ if (!carAvailable(c)) importsNeeded = -1; cost += carPrice(c) * d; } else if (d < 0) refund += carPrice(c) * (-d) * 0.6; });
-    if (importsNeeded < 0) return { ok:false, msg:'所选车厢当前不在售' };
-    const net = cost - refund;
-    if (net > S.cash) return { ok:false, msg:'现金不足' };
-    S.cash -= net; if (net > 0) S.month.buy += net; else S.month.sell += -net;
-    t.cars = cars.map(x => ({ id:x.id, n:x.n })); t.price = Math.max(0, t.price + net);
+  const depotCars = () => S.carDepot || {};
+  function carCounts(cars){
+    const counts = {};
+    for (const { id, n } of cars || []) counts[id] = (counts[id] || 0) + n;
+    return counts;
+  }
+  function checkConsist(m, service, cars){
+    if (!supportsUse(m, service)) return '该机车不支持所选用途';
+    const ids = new Set();
+    for (const { id, n } of cars){
+      if (!Number.isSafeInteger(n) || n < 1 || ids.has(id)) return '车厢数量须为非负整数，同型号只能登记一次';
+      if (carById[id]?.kind !== service) return '车厢类型与所选用途不符';
+      ids.add(id);
+    }
+    if (isUnit(m)) return cars.length ? '动车组为固定编组' : '';
+    const cs = consistStats({ model:m.id, service, cars });
+    if (cs.n > maxCars(modelForUse(m, service))) return `编组过长（上限 ${maxCars(modelForUse(m, service))} 辆）`;
+    if (cs.weight > cs.limit) return `超出机车牵引能力（${Math.round(cs.weight)} t > ${cs.limit} t）`;
+    return '';
+  }
+  function postDepot(depot, id, n, value){
+    if (!n) return;
+    const previous = depot[id] || { n:0, value:0 };
+    const count = previous.n + n;
+    if (count) depot[id] = { n:count, value:Math.max(0, previous.value + value) };
+    else delete depot[id];
+  }
+  function supplyCars(depot, id, n, fromDepot = true){
+    const c = carById[id], stock = depot[id];
+    const reused = fromDepot && stock ? Math.min(n, stock.n) : 0;
+    const bought = n - reused;
+    if (bought && !carAvailable(c)) return { msg:`${c.name}已停产，车厢库数量不足（还差 ${bought} 辆）` };
+    const value = reused ? stock.value * reused / stock.n : 0;
+    const cost = bought ? carPrice(c) * bought : 0;
+    postDepot(depot, id, -reused, -value);
+    return { reused, bought, cost, value:value + cost };
+  }
+  const trainDepreciation = t => Math.pow(0.93, (S.day - t.bought) / 365);
+  function attachedCarValue(t){
+    const counts = carCounts(t.cars), factor = trainDepreciation(t);
+    if (t.carBasis) return Object.fromEntries(Object.keys(counts).map(id => [id, (t.carBasis[id] || 0) * factor]));
+    // 旧档只有整列购价，按现行车头和车厢报价比例拆分账面价值。
+    const costs = Object.entries(counts).map(([id, n]) => [id, carPrice(carById[id]) * n]);
+    const total = trainPrice(trainById[t.model], null, []).loco + costs.reduce((sum, [, value]) => sum + value, 0);
+    const scale = total > 0 ? trainValue(t) / total : 0;
+    return Object.fromEntries(costs.map(([id,value]) => [id, value * scale]));
+  }
+  function quoteConsist(tid, cars, service){
+    const t = S.trains.find(t => t.id === tid);
+    if (!t) return { ok:false, msg:'找不到列车' };
+    const m = trainById[t.model];
+    if (isUnit(m)) return { ok:false, msg:'动车组为固定编组' };
+    cars = cars.filter(({ n }) => n !== 0);
+    service = service || trainUse(t);
+    const issue = checkConsist(m, service, cars);
+    if (issue) return { ok:false, msg:issue };
+    const old = carCounts(t.cars), desired = carCounts(cars), values = attachedCarValue(t), depot = { ...depotCars() };
+    const head = trainValue(t) - Object.values(values).reduce((sum, value) => sum + value, 0);
+    let cost = 0, stored = 0, reused = 0, bought = 0;
+    for (const id of new Set([...Object.keys(old), ...Object.keys(desired)])){
+      const change = (desired[id] || 0) - (old[id] || 0);
+      if (change < 0){
+        const value = values[id] * (-change) / old[id];
+        postDepot(depot, id, -change, value); values[id] -= value; stored -= change;
+      } else if (change > 0){
+        const supply = supplyCars(depot, id, change);
+        if (supply.msg) return { ok:false, msg:supply.msg };
+        values[id] = (values[id] || 0) + supply.value;
+        cost += supply.cost; reused += supply.reused; bought += supply.bought;
+      }
+    }
+    const factor = trainDepreciation(t);
+    const basis = Object.fromEntries(cars.map(({ id }) => [id, Math.max(0, values[id] / factor)]));
+    return { ok:S.cash >= cost || !cost, msg:cost > 0 && S.cash < cost ? '现金不足' : '', cost, stored, reused, bought, depot, basis, service, cars, price:Math.max(0, head / factor) + Object.values(basis).reduce((sum, value) => sum + value, 0) };
+  }
+  function setConsist(tid, cars, service){
+    const q = quoteConsist(tid, cars, service); if (!q.ok) return q;
+    const t = S.trains.find(t => t.id === tid);
+    S.cash -= q.cost; S.month.buy += q.cost; S.carDepot = q.depot;
+    t.cars = q.cars.map(({ id, n }) => ({ id, n })); t.carBasis = q.basis; t.price = q.price;
+    if (trainById[t.model].dualUse) t.service = q.service;
     recompute();
-    return { ok:true, net };
+    return { ok:true, net:q.cost, stored:q.stored, reused:q.reused, bought:q.bought };
   }
 
   const policyById = {}; POLICIES.forEach(p => policyById[p.id] = p);
@@ -188,7 +254,7 @@ const Game = (() => {
       mods: { fare:1, tariff:0.6, importQuota:2, westSubsidy:0, buildSubsidy:0, hsrSubsidy:0, credit:1, paxDemand:1, freightDemand:1, stateFee:1, rivalAggro:1 },
       unlock: { P1:true }, policies: [], stateEvents: [], tracks: [], routes: [], trains: [],
       rivals: RIVALS.map(r => ({ id:r.id, cash: 8e7, active: r.from <= 1985, built: 0, value: 0 })),
-      history: [], month: blankMonth(), news: [], imports: { y:1985, n:0 }, feeMul: 1.0, nid: 1,
+      history: [], month: blankMonth(), news: [], imports: { y:1985, n:0 }, carDepot:{}, feeMul: 1.0, nid: 1,
       lit: {}, litEver: {}, achievements: {}, stations: {}, boost: {}, cityLv: {}, reports: [], evSeen: {}, rep: 50, sigY: 0, contracts: [], offers: [], bonds: [], ipo: null, negMonths: 0, over: false, lastYM: '1985-1', speed: 1,
       lifetime: { pax:0, tons:0, rev:0, trips:0 }
     };
@@ -587,7 +653,7 @@ const Game = (() => {
       while (t.phase >= ow && guard++ < 50) {
         t.phase -= ow; t.dir = t.dir ? 0 : 1;
         const net = e.revTrip;
-        const key = trainById[t.model].use === 'pax' ? 'pax' : 'freight';
+        const key = trainUse(t);
         S.month[key] += e.revTrip; S.month.run += e.costTrip; S.month.fees += e.feeTrip; S.month.trips++;
         if (key==='pax') S.month.paxN += e.unitsTrip; else { S.month.tons += e.unitsTrip; S.month.cargo = S.month.cargo || {}; Object.entries(e.cargoTrip||{}).forEach(([g,v]) => S.month.cargo[g] = (S.month.cargo[g]||0) + v); }
         // 按站对记实际完成的运量：任务、合同、剧本均以此为准
@@ -844,9 +910,10 @@ const Game = (() => {
   function buildMonths(e, cls){ return Math.max(cls >= 2 ? 12 : 4, Math.ceil(e.dist / 80 * Math.sqrt(e.terrain) * (1 + cls*0.5)) + 3); }
 
   // ---------- 财务 ----------
-  function trainValue(t){ const age = (S.day - t.bought)/365; return t.price * Math.pow(0.93, age); }
+  function trainValue(t){ return t.price * trainDepreciation(t); }
+  function carDepotValue(){ return Object.values(depotCars()).reduce((sum, car) => sum + car.value, 0); }
   function trackValue(tr){ const age = (S.day - (tr.built||0))/365; return (tr.cost||0) * Math.pow(0.975, age); }
-  function assets(){ return S.trains.reduce((s,t) => s + trainValue(t), 0) + S.tracks.filter(t => t.owner==='P').reduce((s,t) => s + trackValue(t), 0) + Object.values(S.stations||{}).reduce((s,x) => s + stationValue(x), 0) + landValue() + Object.values(S.bizCost||{}).reduce((s,x) => s + x * 0.6, 0); }
+  function assets(){ return S.trains.reduce((s,t) => s + trainValue(t), 0) + carDepotValue() + S.tracks.filter(t => t.owner==='P').reduce((s,t) => s + trackValue(t), 0) + Object.values(S.stations||{}).reduce((s,x) => s + stationValue(x), 0) + landValue() + Object.values(S.bizCost||{}).reduce((s,x) => s + x * 0.6, 0); }
   // —— 二手车：同业求购 ——
   function usedMonth(y, pm){ S.usedOffers = (S.usedOffers || []).filter(o => o.expire > S.day && S.trains.some(t => t.id === o.tid));
     if (pm % 2 !== 0 || S.usedOffers.length >= 3) return;
@@ -868,7 +935,7 @@ const Game = (() => {
     log('出售给同业', `${t.name} 以 ${fmtW(o.price)}元转让给${rivalDef(o.rid).name}。`, 'info'); recompute(); return { ok:true, price:o.price }; }
   function declineUsed(id){ S.usedOffers = (S.usedOffers || []).filter(x => x.id !== id); }
   function newYearModels(y){ const nw = TRAINS.filter(m => m.year === y && !m.research && !m.own).map(m => m.id);
-    const ownIds = new Set(S.trains.map(t => t.model)); const ended = TRAINS.filter(m => m.end === y - 1 && ownIds.has(m.id)).map(m => m.id);
+    const ownIds = new Set(S.trains.map(t => t.model)); const ended = TRAINS.filter(m => m.end === y - 1 && ownIds.has(m.id) && !isRetained(m)).map(m => m.id);
     const obs = TRAINS.filter(m => m.end + 8 === y - 1 && ownIds.has(m.id)).map(m => m.id);
     if (nw.length) log('新车上市', `${y} 年新车型上市：${nw.map(id => trainById[id].name).join('、')}。可在「购车」页查看。`, 'info');
     if (nw.length || ended.length || obs.length) pendingPopups.push({ type:'newModels', y, nw, ended, obs }); }
@@ -878,20 +945,25 @@ const Game = (() => {
   const CLASS_NAME = { 'pax-d':'客运内燃/氢能机车', 'freight-d':'货运内燃/氢能机车', 'pax-e':'客运电力机车', 'freight-e':'货运电力机车', 'emu-L':'城际动车组（≤200 km/h）', 'emu-M':'250 级动车组', 'emu-H':'300 级以上高速动车组' };
   const FAR_END = 2090;   // end ≥ 2090 视为“长期在产”
   function buyable(m){ return !m.research || !!(S && S.rd && S.rd.done && S.rd.done[m.research]); }
-  function endingSoon(m, y){ y = y || ym(S.day).y; return m.end < FAR_END && y >= m.year && y <= m.end && m.end - y <= 2; }
+  function endingSoon(m, y){ y = y || ym(S.day).y; return !isRetained(m) && m.end < FAR_END && y >= m.year && y <= m.end && m.end - y <= 2; }
   function succScore(m){ return m.use === 'freight' ? m.cap * 10 + m.vmax : m.vmax * 10 + m.cap / 100; }
   // 推荐替代车型：同级别、比它晚停产；优先当前在售、国产（或已国产化）、性能最好的
   function successorOf(m, y){ y = y || ym(S.day).y; const c = succClass(m);
-    const c1 = TRAINS.filter(x => x !== m && buyable(x) && succClass(x) === c && x.end > m.end && x.year <= Math.max(y, m.end) + 1);
+    const c1 = TRAINS.filter(x => x !== m && buyable(x) && (!m.plateau || (x.plateau && supportsUse(x, m.use))) && succClass(x) === c && x.end > m.end && x.year <= Math.max(y, m.end) + 1);
     if (!c1.length) return null;
     const now = c1.filter(x => x.year <= y && y <= x.end); const pool = now.length ? now : c1;
     pool.sort((a, b) => ((isImp(a) ? 1 : 0) - (isImp(b) ? 1 : 0)) || (succScore(b) - succScore(a)) || (a.year - b.year));
     return pool[0]; }
-  function nextTrainName(model){
-    S.serial = S.serial || {}; const id = model.id, pre = `${model.en.split(' ').pop()}-`;
-    const used = S.trains.filter(t => t.model === id).map(t => { const m = String(t.name || '').startsWith(pre) ? /^(\d+)$/.exec(String(t.name).slice(pre.length)) : null; return m ? +m[1] : 0; });
-    const n = (S.serial[id] = Math.max(S.serial[id] || 0, S.trains.filter(t => t.model===id).length, ...used) + 1);   // 同型编号单调递增，卖车后不重号
-    return pre + String(n).padStart(3, '0'); }
+  function nextTrainNames(model, count){
+    S.serial = S.serial || {};
+    const id = model.id, pre = `${model.en.split(' ').pop()}-`, owned = S.trains.filter(t => t.model === id);
+    const last = owned.reduce((n, t) => {
+      const serial = t.name.startsWith(pre) && /^(\d+)$/.exec(t.name.slice(pre.length));
+      return serial ? Math.max(n, +serial[1]) : n;
+    }, Math.max(S.serial[id] || 0, owned.length));
+    S.serial[id] = last + count;
+    return Array.from({ length:count }, (_, i) => pre + String(last + i + 1).padStart(3, '0'));
+  }
 
   // —— 二手车市场：从国铁和同业购买旧车（停产车型也能买到） ——
   const USED_MAX = 6;
@@ -926,7 +998,7 @@ const Game = (() => {
     if (S.cash < o.price) return { ok:false, msg:'现金不足' };
     S.cash -= o.price; S.month.buy += o.price;
     if (o.seller !== 'S') { const r = S.rivals.find(x => x.id === o.seller); if (r) r.cash += o.price; }
-    const t = { id:S.nid++, model:m.id, name:nextTrainName(m), route:routeId || null, status:'delivery', arrive:S.day + 15, bought:S.day - o.age * 365, ovh:S.day - o.so * 365,
+    const t = { id:S.nid++, model:m.id, name:nextTrainNames(m, 1)[0], route:routeId || null, status:'delivery', arrive:S.day + 15, bought:S.day - o.age * 365, ovh:S.day - o.so * 365,
       price:o.price / Math.pow(0.93, o.age), year:ym(S.day).y, phase:0, dir:0, cars:(o.cars || []).filter(x => carById[x.id]).map(x => ({ id:x.id, n:x.n })), used:true };
     S.trains.push(t); S.usedMarket = S.usedMarket.filter(x => x !== o);
     log('购入二手车', `从${sellerName(o.seller)}购入 ${m.name}（车龄 ${o.age} 年），${fmtW(o.price)}元，约 15 天后交付。`, 'info');
@@ -1069,28 +1141,78 @@ const Game = (() => {
     log('线路改造', `${cities[e.a].name}—${cities[e.b].name} 开始改造（${q.v} km/h${q.elec?'，电气化':''}），工期 ${q.months} 个月。`, 'info');
     return { ok:true };
   }
-  function trainPrice(model, routeId){
+  function trainPrice(model, routeId, cars){
     const y = ym(S.day).y;
     const base = model.price * 1e4 * (cpi(y) / cpi(Math.max(1985, model.year)));
     const tariff = isImp(model) ? S.mods.tariff : 0;
-    const dc = defaultConsist(model, routeId); const consist = consistCost(dc);
+    const dc = cars || defaultConsist(model, routeId); const consist = consistCost(dc);
     const locMul = localized(model) ? 0.8 : 1;
-    return { total: base * locMul * (1 + tariff) + consist, loco: base * (1 + tariff), base, tariff, consist, dc };
+    const loco = base * locMul * (1 + tariff);
+    return { total:loco + consist, loco, base, tariff, consist, dc };
   }
-  function available(model){ const y = ym(S.day).y; if (model.research && !(S.rd && S.rd.done[model.research])) return false; return y >= model.year && y <= model.end; }
-  function buyTrain(id, routeId){
-    const model = trainById[id]; if (!available(model)) return { ok:false, msg:'该车型当前不在售' };
-    const p = trainPrice(model, routeId);
-    if (isImp(model) && S.mods.importQuota < 99 && S.imports.n >= S.mods.importQuota) return { ok:false, msg:`本年度进口额度已用完（${S.mods.importQuota} 列/年）` };
-    if (S.cash < p.total) return { ok:false, msg:'现金不足' };
-    S.cash -= p.total; S.month.buy += p.total;
-    if (isImp(model)) S.imports.n++;
-    const t = { id:S.nid++, model:id, name: nextTrainName(model), route: routeId || null, status:'delivery',
-      arrive: S.day + (isImp(model) ? 75 : 30), bought:S.day, ovh:S.day, price:p.total, year:ym(S.day).y, phase:0, dir:0, cars:p.dc };
-    S.trains.push(t);
-    log('采购车辆', `订购 ${model.name}，价格 ${fmtW(p.total)}元${isImp(model)?'（含关税）':''}，预计 ${isImp(model)?'75':'30'} 天后交付。`, 'info');
+  function available(model){ const y = ym(S.day).y; return !!model && buyable(model) && y >= model.year && (y <= model.end || isRetained(model)); }
+  const MAX_ORDER = 500;
+  function quoteTrainOrder(id, { routeId = null, count = 1, service, cars } = {}){
+    const model = trainById[id];
+    if (!available(model)) return { ok:false, msg:'该车型当前不在售' };
+    if (!Number.isInteger(count) || count < 1 || count > MAX_ORDER) return { ok:false, msg:`采购数量须为 1–${MAX_ORDER} 列` };
+    if (routeId !== null && !S.routes.some(r => r.id === routeId)) return { ok:false, msg:'找不到配属线路' };
+    service = service || model.use;
+    cars = cars ? cars.filter(({ n }) => n !== 0) : defaultConsist(modelForUse(model, service), routeId);
+    const issue = checkConsist(model, service, cars);
+    if (issue) return { ok:false, msg:issue };
+    const depot = { ...depotCars() }, basis = {}, loco = trainPrice(model, null, []).loco;
+    let bought = 0, reused = 0, carCash = 0;
+    for (const { id:carId, n } of cars){
+      const supply = supplyCars(depot, carId, n * count);
+      if (supply.msg) return { ok:false, msg:supply.msg };
+      basis[carId] = supply.value / count;
+      bought += supply.bought; reused += supply.reused; carCash += supply.cost;
+    }
+    const total = count * loco + carCash, imported = isImp(model);
+    const quota = S.mods.importQuota < 99 && imported ? Math.max(0, S.mods.importQuota - S.imports.n) : Infinity;
+    const msg = count > quota ? `本年度进口额度还剩 ${quota} 列` : '';
+    return { ok:!msg && S.cash >= total, msg:msg || (S.cash < total ? '现金不足' : ''), quotaIssue:msg,
+      model, count, routeId, service, cars, depot, basis, bought, reused, carCash, loco, total, imported, days:imported ? 75 : 30 };
+  }
+  function placeTrainOrder(q){
+    S.cash -= q.total; S.month.buy += q.total; S.carDepot = q.depot;
+    if (q.imported) S.imports.n += q.count;
+    const price = q.loco + Object.values(q.basis).reduce((sum, value) => sum + value, 0);
+    const trains = nextTrainNames(q.model, q.count).map(name => ({
+      id:S.nid++, model:q.model.id, name, route:q.routeId, status:'delivery', arrive:S.day + q.days, bought:S.day, ovh:S.day,
+      price, year:ym(S.day).y, phase:0, dir:0, cars:q.cars.map(({ id, n }) => ({ id, n })), carBasis:{ ...q.basis },
+      ...(q.model.dualUse ? { service:q.service } : {})
+    }));
+    S.trains.push(...trains);
+    return trains;
+  }
+  function buyTrains(id, options){
+    const q = quoteTrainOrder(id, options); if (!q.ok) return q;
+    const trains = placeTrainOrder(q);
+    log('采购车辆', `订购 ${q.model.name} ${q.count} 列，合计 ${fmtW(q.total)}元，约 ${q.days} 天后交付。`, 'info');
     recompute();
-    return { ok:true, train:t };
+    return { ok:true, train:trains[0], trains, days:q.days, total:q.total };
+  }
+  function buyTrain(id, routeId){ return buyTrains(id, { routeId:routeId || null }); }
+  function quoteDepotTrade(id, n, sell){
+    const c = carById[id];
+    if (!c || !Number.isSafeInteger(n) || n < 1 || n > 1000000) return { ok:false, msg:'请输入有效的车厢数量' };
+    const stock = depotCars()[id];
+    if (sell && (!stock || n > stock.n)) return { ok:false, msg:'车厢库数量不足' };
+    if (!sell && !carAvailable(c)) return { ok:false, msg:'该车厢当前不在售' };
+    const value = sell ? stock.value * n / stock.n : carPrice(c) * n;
+    const amount = sell ? Math.min(carPrice(c) * n * 0.6, value) : value;
+    return { ok:sell || S.cash >= amount, msg:!sell && S.cash < amount ? '现金不足' : '', amount, value };
+  }
+  function tradeDepotCars(id, n, sell){
+    const q = quoteDepotTrade(id, n, sell); if (!q.ok) return q;
+    S.carDepot = { ...depotCars() };
+    postDepot(S.carDepot, id, sell ? -n : n, sell ? -q.value : q.value);
+    S.cash += sell ? q.amount : -q.amount;
+    S.month[sell ? 'sell' : 'buy'] += q.amount;
+    log(sell ? '出售车厢' : '购入车厢', `${carById[id].name} ${n} 辆，${sell ? '回收' : '支付'} ${fmtW(q.amount)}元。`, 'info');
+    return q;
   }
   // —— 车型换代 ——
   function modelEra(m, y){ y = y || ym(S.day).y; if (y > m.end + 8) return 'obsolete'; if (y > m.end) return 'ended'; if (y - m.year <= 1) return 'new'; return 'active'; }
@@ -1102,12 +1224,60 @@ const Game = (() => {
   // 过时车在干线上票价打折、维修更贵；调到支线则不受影响，维修还更省
   function eraFare(t){ if (trainOnBranch(t)) return 1; return ERA[eraOf(t)].fare; }
   function eraMaint(t){ const e = eraOf(t); if (trainOnBranch(t)) return e === 'ended' || e === 'obsolete' ? 0.9 : 1; return ERA[e].maint; }
-  function sellQuote(t){ const e = eraOf(t); return trainValue(t) * ERA[e].sell; }
-  function sellTrain(tid){
-    const i = S.trains.findIndex(t => t.id===tid); if (i < 0) return;
-    const v = sellQuote(S.trains[i]); S.cash += v; S.month.sell += v;
-    log('出售车辆', `${S.trains[i].name} 售出，回收 ${fmtW(v)}元。`, 'info');
-    S.trains.splice(i, 1); recompute();
+  function sellQuote(t, keepCars = false){
+    const carValue = keepCars && !isUnit(trainById[t.model]) ? Object.values(attachedCarValue(t)).reduce((sum, value) => sum + value, 0) : 0;
+    return Math.max(0, trainValue(t) - carValue) * ERA[eraOf(t)].sell;
+  }
+  function selectedTrains(ids){ const selected = new Set(ids); return S.trains.filter(t => selected.has(t.id)); }
+  function quoteTrainSale(ids, keepCars = false){
+    const entries = selectedTrains(ids).map(train => ({ train, amount:sellQuote(train, keepCars) }));
+    const stored = keepCars ? entries.reduce((sum, { train }) => sum + (isUnit(trainById[train.model]) ? 0 : (train.cars || []).reduce((n, car) => n + car.n, 0)), 0) : 0;
+    return { entries, stored, total:entries.reduce((sum, entry) => sum + entry.amount, 0) };
+  }
+  function removeSoldTrains(sold){
+    S.trains = S.trains.filter(t => !sold.has(t.id));
+    S.usedOffers = (S.usedOffers || []).filter(o => !sold.has(o.tid));
+  }
+  function sellTrains(ids, keepCars = false){
+    const { entries, total, stored } = quoteTrainSale(ids, keepCars), count = entries.length;
+    if (!count) return { ok:false, msg:'找不到待出售的列车' };
+    const sold = new Set(entries.map(({ train }) => train.id));
+    if (stored){
+      S.carDepot = { ...depotCars() };
+      for (const { train } of entries){
+        if (isUnit(trainById[train.model])) continue;
+        const values = attachedCarValue(train);
+        for (const [id, n] of Object.entries(carCounts(train.cars))) postDepot(S.carDepot, id, n, values[id]);
+      }
+    }
+    S.cash += total; S.month.sell += total;
+    removeSoldTrains(sold);
+    if (count === 1) log('出售车辆', `${entries[0].train.name} 售出，回收 ${fmtW(total)}元。`, 'info');
+    else log('批量出售', `${count} 列车售出，合计回收 ${fmtW(total)}元。`, 'info');
+    recompute();
+    return { ok:true, count, total, stored, ids:[...sold] };
+  }
+  function sellTrain(tid){ sellTrains([tid]); }
+  function quoteHeadReplacement(tid, id){
+    const train = S.trains.find(t => t.id === tid), model = trainById[id];
+    if (!train || isUnit(trainById[train.model]) || !model || isUnit(model)) return { ok:false, msg:'请选择可更换的机车' };
+    const service = trainUse(train), cars = train.cars || [];
+    const issue = checkConsist(model, service, cars); if (issue) return { ok:false, msg:issue };
+    const q = quoteTrainOrder(id, { routeId:train.route || null, service, cars:[] });
+    if (!q.model || q.quotaIssue) return q;
+    const proceeds = sellQuote(train, true), net = q.total - proceeds;
+    const plan = train.route && cars.length ? planTrain({ model:id, service, cars, route:train.route }) : null;
+    return { ...q, train, cars, proceeds, net, basis:attachedCarValue(train), plan,
+      ok:S.cash >= net, msg:S.cash < net ? '现金不足' : '' };
+  }
+  function replaceHead(tid, id){
+    const q = quoteHeadReplacement(tid, id); if (!q.ok) return q;
+    S.cash += q.proceeds; S.month.sell += q.proceeds;
+    removeSoldTrains(new Set([tid]));
+    const [train] = placeTrainOrder(q);
+    log('更换车头', `${q.train.name} 更换为 ${train.name}，原编组与配属线路转移到新车头。`, 'info');
+    recompute();
+    return { ok:true, train, days:q.days, net:q.net };
   }
   function assignTrain(tid, routeId){
     const t = S.trains.find(t => t.id===tid); if (!t) return;
@@ -1116,7 +1286,7 @@ const Game = (() => {
     if (t.status === 'run' || t.status === 'idle') t.status = t.route ? 'run' : 'idle';
     recompute();
   }
-  const ROUTE_COLORS = ['#b3261e','#1d5e9e','#2f6b3f','#c27a12','#6a3d8f','#0f7a7a','#8e1c56','#5a6a1a','#a0522d','#33507a'];
+  const ROUTE_COLORS = ['#b3261e','#1d3f6e','#2f6b3f','#9a5b2e','#b8902a','#5e4b8b','#2f7f7a','#6b6a60'];
   function createRoute(stops, name){
     const r = { id:S.nid++, stops:stops.slice(), name: name || `${cities[stops[0]].name}—${cities[stops[stops.length-1]].name}`, pref:'fast', color: ROUTE_COLORS[S.routes.length % ROUTE_COLORS.length] };
     S.routes.push(r); log('新开线路', `${r.name}（${stops.length} 站）`, 'info'); recompute(); return r;
@@ -1207,7 +1377,7 @@ const Game = (() => {
     const punct = ts.reduce((a, t) => a + (econ[t.id].punct || 0.95) * econ[t.id].plan.trips, 0) / w;
     const lf = ts.reduce((a, t) => a + econ[t.id].lf, 0) / ts.length;
     const cmf = ts.reduce((a, t) => a + (econ[t.id].comfort || 1), 0) / ts.length;
-    const pax = trainById[ts[0].model].use === 'pax';
+    const pax = ts.some(t => trainUse(t) === 'pax');
     const uMax = Math.max(...ts.map(t => econ[t.id].plan.uMax || 0));
     return { punct, lf, cmf, pax, uMax, n:ts.length };
   }
@@ -1380,6 +1550,13 @@ const Game = (() => {
   function setRD(lv){ rdState().lv = clamp(lv|0, 0, 3); }
   function localized(m){ return !!(S && S.rd && S.rd.done['loc_' + m.id]); }
   function isImp(m){ return !!m.imported && !localized(m); }
+  function isRetained(m){ return !!S?.rd?.done?.['retain_' + m.id]; }
+  function retentionProjects(){
+    const y = ym(S.day).y;
+    return TRAINS.filter(m => buyable(m) && m.year <= y && m.end < FAR_END)
+      .sort((a, b) => b.end - a.end || a.year - b.year)
+      .map(m => ({ key:'retain_' + m.id, kind:'retain', name:`保留 ${m.name}`, pts:Math.max(60, Math.round(m.price / 20)), m }));
+  }
   function rdProjects(){
     const y = ym(S.day).y; const rd = rdState(); const out = [];
     TRAINS.filter(m => m.imported).forEach(m => { const n = S.trains.filter(t => t.model === m.id).length; const key = 'loc_' + m.id;
@@ -1389,10 +1566,12 @@ const Game = (() => {
       out.push({ key:o.id, kind:'own', name:o.name, pts:o.pts, m:trainById[o.model], locked: ok ? '' : (y < o.from ? `${o.from} 年起可立项` : '需先完成上一代自主车型'), desc:'研发成功后可购买本公司自主车型' }); });
     (rd.designs || []).forEach(d => { if (rd.done[d.research]) return;
       out.push({ key:d.research, kind:'design', name:`自主设计：${d.name}`, pts:d.rdPts || 1000, m:d, desc:`${d.en} · ${d.vmax} km/h · ${d.use === 'pax' ? (isUnit(d) ? d.cap + ' 人' : '功率 ' + d.power.toLocaleString() + ' kW') : d.cap.toLocaleString() + ' t'} · 运行成本 ${d.run}` }); });
+    out.push(...retentionProjects().filter(p => !rd.done[p.key]));
     return out;
   }
   function startProject(key){ const rd = rdState(); const p = rdProjects().find(x => x.key === key); if (!p) return { ok:false, msg:'项目不可用' }; if (p.locked) return { ok:false, msg:p.locked };
-    if (rd.cur && rd.cur !== key) { rd.prog = rd.prog || {}; rd.prog[rd.cur] = rd.pts; }
+    if (rd.cur === key) return { ok:true };
+    if (rd.cur) { rd.prog = rd.prog || {}; rd.prog[rd.cur] = rd.pts; }
     rd.cur = key; rd.pts = (rd.prog && rd.prog[key]) || 0; log('研发立项', `启动研发项目「${p.name}」，需要 ${p.pts} 研发点。`, 'info'); return { ok:true }; }
   function rdMonth(y, rev){
     const rd = rdState(); const spend = Math.max(0, rev) * [0, 0.01, 0.025, 0.05][rd.lv] + (rd.lv ? 10e4 * cpi(y) * rd.lv : 0);
@@ -1402,7 +1581,7 @@ const Game = (() => {
     const p = rdProjects().find(x => x.key === rd.cur);
     if (p && rd.pts >= p.pts) { rd.done[p.key] = ym(S.day).y; rd.cur = null; rd.pts = 0;
       if (p.kind === 'design') p.m.year = ym(S.day).y;   // 定型投产年份
-      log('研发成功', p.kind === 'loc' ? `${p.m.name} 实现国产化：免关税、不占进口额度、价格降低 20%。` : `自主车型「${p.m.name}」研制成功，可以在购车页采购！`, 'good');
+      log('研发成功', p.kind === 'loc' ? `${p.m.name} 实现国产化：免关税、不占进口额度、价格降低 20%。` : p.kind === 'retain' ? `${p.m.name} 获得长期订购渠道，可在购车页采购。` : `自主车型「${p.m.name}」研制成功，可以在购车页采购！`, 'good');
       pendingPopups.push({ type:'rd', name:p.name, kind:p.kind, model:p.m.name }); addRep(2); }
     return spend;
   }
@@ -1416,7 +1595,7 @@ const Game = (() => {
   // 时速 200 以上列车承担的客流（按两地间本公司列车运能比例折算）
   function fastServed(a, b){ const ci = cityIdx[a], cj = cityIdx[b]; let f = 0, all = 0;
     S.trains.forEach(t => { if (t.status !== 'run') return; const r = S.routes.find(q => q.id === t.route); if (!r || !r.stops.includes(ci) || !r.stops.includes(cj)) return;
-      const e = econ[t.id]; const m = trainById[t.model]; if (!e || !e.plan.ok || m.use !== 'pax') return; const c = e.plan.trips * tmodel(t).cap; all += c; if (m.vmax >= 200) f += c; });
+      const e = econ[t.id]; const m = trainModel(t); if (!e || !e.plan.ok || m.use !== 'pax') return; const c = e.plan.trips * tmodel(t).cap; all += c; if (m.vmax >= 200) f += c; });
     return all ? pairServed('pax', null, a, b) * f / all : 0; }
   const pk = (a, b) => { const ci = cityIdx[a], cj = cityIdx[b]; return Math.min(ci, cj) + '-' + Math.max(ci, cj); };
   // 剧本按月记录实际运量（上月完成量）
@@ -1518,15 +1697,37 @@ const Game = (() => {
     depotsOf().forEach(d => { if (d.lv) up += DEPOT_LV[d.lv].upkeep * 1e4 * cpi(y); });
     S.cash -= up; S.month.depot = up; S.month.trackMaint = (S.month.trackMaint || 0) + up; return up; }
   function overhaulQuote(t){ const y = ym(S.day).y; return t.price * 0.15 * (cpi(y) / cpi(t.year || 1985)); }
+  function overhaulIssue(t){
+    if (!t) return '找不到列车';
+    if (t.status === 'delivery' || t.status === 'overhaul') return '该车当前不能大修';
+    return yrsSinceOvh(t) < 2 ? '距上次大修不足 2 年' : '';
+  }
+  const overhaulDays = t => depotCover[t.id] ? 18 : 30;
+  function quoteTrainOverhaul(ids){
+    const trains = selectedTrains(ids);
+    const entries = trains.filter(t => !overhaulIssue(t)).map(train => ({ train, amount:overhaulQuote(train), days:overhaulDays(train) }));
+    return { entries, total:entries.reduce((sum, entry) => sum + entry.amount, 0), skipped:trains.length - entries.length };
+  }
+  function overhaulTrains(ids){
+    const { entries, total } = quoteTrainOverhaul(ids), count = entries.length;
+    if (!count) return { ok:false, msg:'所选列车目前无法大修' };
+    if (S.cash < total) return { ok:false, msg:'现金不足' };
+    S.cash -= total; S.month.ovhCost = (S.month.ovhCost || 0) + total;
+    for (const { train, days } of entries){
+      train.status = 'overhaul'; train.ovhDone = S.day + days;
+    }
+    if (count === 1){
+      const { train, days } = entries[0];
+      log('车辆大修', `${train.name} 进厂大修，费用 ${fmtW(total)}元，停运 ${days} 天${days < 30 ? '（就近机务段检修）' : ''}。`, 'info');
+    } else log('批量大修', `${count} 列车进厂大修，合计支出 ${fmtW(total)}元。`, 'info');
+    recompute();
+    return { ok:true, count, total, ids:entries.map(({ train }) => train.id) };
+  }
   function overhaul(tid){
-    const t = S.trains.find(x => x.id === tid); if (!t) return { ok:false, msg:'找不到列车' };
-    if (t.status === 'delivery' || t.status === 'overhaul') return { ok:false, msg:'该车当前不能大修' };
-    if (yrsSinceOvh(t) < 2) return { ok:false, msg:'距上次大修不足 2 年' };
-    const c = overhaulQuote(t); if (S.cash < c) return { ok:false, msg:'现金不足' };
-    S.cash -= c; S.month.ovhCost = (S.month.ovhCost||0) + c;
-    const dd = depotCover[t.id] ? 18 : 30; t.status = 'overhaul'; t.ovhDone = S.day + dd;
-    log('车辆大修', `${t.name} 进厂大修，费用 ${fmtW(c)}元，停运 ${dd} 天${dd < 30 ? '（就近机务段检修）' : ''}。`, 'info');
-    recompute(); return { ok:true, cost:c };
+    const t = S.trains.find(x => x.id === tid), issue = overhaulIssue(t);
+    if (issue) return { ok:false, msg:issue };
+    const days = overhaulDays(t), result = overhaulTrains([tid]);
+    return result.ok ? { ok:true, cost:result.total, days } : result;
   }
   function breakdowns(){
     const hit = [];
@@ -1752,7 +1953,7 @@ const Game = (() => {
   // ---------- 存档 ----------
   // —— 存档：自动存档 + 5 个手动存档位（manual 即 1 号位，兼容旧存档）——
   const SLOTS = ['manual', 's2', 's3', 's4', 's5'];
-  const SAVE_VER = 6;
+  const SAVE_VER = 7;
   function saveMeta(){ const t = ym(S.day); return { company:S.company, date:`${t.y}年${t.m}月`, worth:netWorth(), lit:Object.keys(S.lit || {}).length, scn:S.scn ? (SCENARIOS.find(x => x.id === S.scn.id) || {}).title || null : null, at:Date.now() }; }
   function metas(){ try { return JSON.parse(localStorage.getItem('tdcq2_meta') || '{}'); } catch(e) { return {}; } }
   function save(slot){ S.saveVer = SAVE_VER; return writeSave(slot || 'manual', S, saveMeta); }
@@ -1765,7 +1966,7 @@ const Game = (() => {
   const ARR = () => [], OBJ = () => ({});
   const STATE_DEF = { lifetime:() => ({ pax:0, tons:0, rev:0, trips:0 }), imports:null, lit:OBJ, litEver:OBJ, achievements:OBJ, boost:OBJ, cityLv:OBJ, reports:ARR, evSeen:OBJ,
     offers:ARR, contracts:ARR, bonds:ARR, policies:ARR, stateEvents:ARR, unlock:OBJ, stations:OBJ, serial:OBJ, wars:ARR, gov:ARR, depots:ARR, supers:OBJ, franch:ARR, overseas:ARR,
-    locals:ARR, jv:ARR, usedOffers:ARR, usedMarket:ARR, cands:ARR, execs:OBJ, biz:OBJ, bizCost:OBJ, land:OBJ, stSub:OBJ, slowSub:OBJ, cityTrips:OBJ };
+    locals:ARR, jv:ARR, usedOffers:ARR, usedMarket:ARR, cands:ARR, execs:OBJ, biz:OBJ, bizCost:OBJ, land:OBJ, stSub:OBJ, slowSub:OBJ, cityTrips:OBJ, carDepot:OBJ };
   const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
   function validateState(st, ver){ try { return validateState0(st, ver); } catch(e) { return ['存档结构异常：' + (e && e.message || e)]; } }
   function validateState0(st, ver){
@@ -1794,6 +1995,7 @@ const Game = (() => {
     if (st.rd && st.rd.designs !== undefined && !Array.isArray(st.rd.designs)) add('自主设计 designs 不是列表');
     if (err.length) return err;
     registerDesigns(st);   // 自主设计车型要先登记，列车才能通过车型校验
+    Object.entries(st.carDepot || {}).forEach(([id, item]) => { if (!carById[id] || !isObj(item) || !Number.isSafeInteger(item.n) || item.n <= 0 || !fin(item.value) || item.value < 0) add('车厢库数据无效'); });
     st.rivals.forEach((r, i) => { if (!r || !RIVALS.some(x => x.id === r.id) || !fin(r.cash)) add(`第 ${i+1} 家同业数据无效`); });
     const rv = new Set(RIVALS.map(r => r.id)), owners = new Set(['P','S', ...rv]);
     st.tracks.forEach((tr, i) => { if (!tr || !Number.isInteger(tr.e) || !edges[tr.e]) add(`第 ${i+1} 段轨道的走廊编号无效`);
@@ -1811,6 +2013,8 @@ const Game = (() => {
       if (!fin(t.price) || !fin(t.bought)) add(`${t.name || '列车'} 价格或购买日期无效`);
       if (t.cars !== undefined && t.cars !== null && !Array.isArray(t.cars)) add(`${t.name || '列车'} 编组 cars 不是列表`);
       else (t.cars || []).forEach(x => { if (!isObj(x) || typeof x.id !== 'string' || !carById[x.id] || !fin(x.n) || x.n < 0) add(`${t.name || '列车'} 编组中有无效车厢`); });
+      if (t.service !== undefined && !supportsUse(trainById[t.model], t.service)) add(`第 ${i+1} 列车用途无效`);
+      if (t.carBasis !== undefined && (!isObj(t.carBasis) || Object.entries(t.carBasis).some(([id, value]) => !carById[id] || !fin(value) || value < 0) || Object.values(t.carBasis).reduce((a, b) => a + b, 0) > t.price + 0.01)) add(`第 ${i+1} 列车的车厢账面价值无效`);
       if (typeof t.name !== 'string') add('列车名称无效'); if (!fin(t.id)) add('列车编号无效'); });
     st.history.forEach((h, i) => { if (!h || !fin(h.y) || !fin(h.m) || !fin(h.net)) add(`月报第 ${i+1} 条无效`); });
     return err;
@@ -1846,7 +2050,7 @@ const Game = (() => {
     S.mapVer = 2;
     log('地图扩展', `地图新增西北、东北、西南边疆城市和蒙古、俄罗斯、中亚、南亚、东南亚、朝鲜半岛的海外城市。${lines.length ? `已开通的铁路新线：${lines.join('、')}。` : ''}${pols.length ? `已出台的开放政策：${pols.join('、')}。` : ''}`, 'info');
   }
-  function fixUp(){ ensureFrontier(); ensureT2(); ensureT4(); ensureT5(); S.trains.forEach(t => { if (!t.cars) t.cars = defaultConsist(trainById[t.model]); }); recompute(); }
+  function fixUp(){ ensureFrontier(); ensureT2(); ensureT4(); ensureT5(); S.trains.forEach(t => { if (!t.cars) t.cars = defaultConsist(trainModel(t)); }); recompute(); }
   // 在临时状态里迁移、校验、重建缓存；全部成功后才切换，失败时原局面原样保留
   function adopt(st, ver){
     const errs = validateState(st, ver); if (errs.length) { registerDesigns(S); return { ok:false, msg:errs.join('；') }; }
@@ -1975,7 +2179,7 @@ const Game = (() => {
     if (g.k === 'coal') return P['freight:coal:' + g.ci + '-' + g.cj] || 0;
     let s = 0; Object.entries(P).forEach(([k, v]) => { const m = /^freight:\w+:(\d+)-(\d+)$/.exec(k); if (m && (+m[1] === g.city || +m[2] === g.city)) s += v; }); return s;
   }
-  function freightStops(){ const s = new Set(); S.trains.forEach(t => { const m = trainById[t.model]; if (m.use !== 'freight' || !t.route) return; const r = S.routes.find(q => q.id === t.route); if (r) r.stops.forEach(c => s.add(c)); }); return [...s]; }
+  function freightStops(){ const s = new Set(); S.trains.forEach(t => { if (trainUse(t) !== 'freight' || !t.route) return; const r = S.routes.find(q => q.id === t.route); if (r) r.stops.forEach(c => s.add(c)); }); return [...s]; }
   function govOffer(g, y){
     g.id = S.nid++; g.st = 'offer'; g.prog = 0; g.offered = S.day; g.expire = Math.min(S.day + 30, g.expire || 1e9);
     g.cash = Math.round(g.cash * cpi(y) / 1e4) * 1e4;
@@ -2080,7 +2284,7 @@ const Game = (() => {
   function frShare(ci, cj){ const f = frOf(ci, cj); return !f ? 1 : f.holder === 'P' ? 1.25 : 0.8; }
   function frFee(eid){ return (S.franch || []).some(f => f.st === 'held' && f.holder === 'P' && f.edges.includes(eid)) ? 0.5 : 1; }
   // 经营权考核：只计实际驶过中标干线区段、且在干线上至少停靠两站的旅客列车（plan=true 时给出按计划的预计值）
-  function frTrips(f, plan){ let n = 0; S.trains.forEach(t => { const m = trainById[t.model]; if (m.use !== 'pax') return; const e = econ[t.id]; if (!e || !e.plan.ok) return; const r = S.routes.find(q => q.id === t.route); if (!r) return;
+  function frTrips(f, plan){ let n = 0; S.trains.forEach(t => { if (trainUse(t) !== 'pax') return; const e = econ[t.id]; if (!e || !e.plan.ok) return; const r = S.routes.find(q => q.id === t.route); if (!r) return;
       if (!e.plan.legs.some(l => f.edges.includes(l.e))) return;
       const st = e.plan.st; if (r.stops.filter((c, k) => st[k] && f.set[c]).length < 2) return;
       n += plan ? (t.status === 'run' ? e.plan.trips : 0) : 0; });
@@ -2165,19 +2369,21 @@ const Game = (() => {
 
   return {
     cities, edges, edgeByPair, adj, trainById, policyById, ACH, TRACK_CLASSES, edgeLock, lockText, BASE_EDGES,
-    get S(){ return S; }, carById, isUnit, consistStats, trailLimit, maxCars, carAvailable, carPrice, defaultConsist, setConsist, comfortMul, get econ(){ return econ; }, get pairInfo(){ return pairInfo; }, get stateTime(){ return stateTime; },
+    get S(){ return S; }, carById, isUnit, supportsUse, modelForUse, trainUse, trainModel, consistStats, trailLimit, maxCars, carAvailable, carPrice, defaultConsist, quoteConsist, setConsist, comfortMul, get econ(){ return econ; }, get pairInfo(){ return pairInfo; }, get stateTime(){ return stateTime; },
     newGame, tick, recompute, ym, dateOf, cpi, rate, popOf, freightOf, fmtW, clsOfV, feeRate, stateFeeBase,
     buildQuote, buildTrack, buildTrackBlock, upgradeQuote, upgradeTrack, canBuildClass, isHighSpeed, trainPrice, available, buyTrain, sellTrain, assignTrain,
     createRoute, deleteRoute, routeAllowed, isTown, stationLv, stopFlags, stationQuote, buildStation, findPath, groups, groupQuote, buildGroup, toggleSkip, planTrain, netWorth, assets, creditLimit, borrow, repay, trainValue,
     paxDemand, freightDemand, captureShare, cargoSD, cargoCaps, get MF(){ return MF; }, get blocked(){ return blocked; }, activeEvents, events, popups: () => { const p = pendingPopups; pendingPopups = []; return p; },
     SCENARIOS, scenario, scnProgress, startScenario, board, scoreOf,
-    ROLES, TRAIN_LV, OWN_MODELS, execSalary, exLv, hireExec, fireExec, setTraining, staffCost, rdState, setRD, rdProjects, startProject, localized, isImp, genCands,
+    ROLES, TRAIN_LV, OWN_MODELS, execSalary, exLv, hireExec, fireExec, setTraining, staffCost, rdState, setRD, rdProjects, startProject, localized, isImp, isRetained, retentionProjects, genCands,
     SHOP_LV, shopLv, shopQuote, buildShop, shopIncome, get cityPax(){ return cityPax; }, landPrice, landIdx, buyLand, sellLand, landValue, acceptLocal, declineLocal, setSlow, genLocal,
     ensureT4, controlPct, warOf, warAt, warRespond, raidPct, diluteQuote, defendDilute, greenmailQuote, defendGreenmail, GOV, govAccept, govDecline, govProgressNow, govMetric, mkStr, rivalNodes,
     SIGNALS, SVC, sigOf, capOf, get trackUtil(){ return trackUtil; }, signalQuote, upgradeSignal, setService, routeStats,
     ensureT2, availOf, yrsSinceOvh, overhaulQuote, overhaul, acceptContract, declineContract, contractKey, bondRate, bondRoom, issueBond, valuation, ipoCheck, doIPO, setPayout, secondaryQuote, secondary, buyback, marketCap, acquireQuote, acquireRival, ttmProfit, repMul, genContracts,
     succClass, CLASS_NAME, successorOf, endingSoon, buyable, FAR_END, sellerName, buyUsed, consistAt, PLATFORMS, designUnlock, designBase, designQuote, createDesign, cancelDesign, DESIGN_MAX,
-    modelEra, ERA, isBranch, trainOnBranch, eraOf, eraFare, eraMaint, sellQuote, acceptUsed, declineUsed, routeKm,
+    modelEra, ERA, isBranch, trainOnBranch, eraOf, eraFare, eraMaint, sellQuote, quoteTrainSale, sellTrains, acceptUsed, declineUsed, routeKm,
+    overhaulIssue, overhaulDays, quoteTrainOverhaul, overhaulTrains,
+    MAX_ORDER, quoteTrainOrder, buyTrains, carDepotValue, quoteDepotTrade, tradeDepotCars, quoteHeadReplacement, replaceHead,
     SUPER, superQuote, startSuper, FRANCHISE, FR_YEARS, frBid, frTrips, frOf, OVERSEAS, ovQuote, ovBid, hsrKm, ensureT6,
     GRADES, gradeOf, setGrade, sleeperFrac, DEPOT_LV, depotsOf, depotQuote, buildDepot, depotCandidates, nearDepot, get depotCover(){ return depotCover; }, cityKm,
     save, load, hasSave, listSaves, deleteSave, exportSave, importSave, SLOTS, maintOf, log: (a,b,c) => log(a,b,c),

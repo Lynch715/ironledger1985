@@ -3,11 +3,11 @@
 //  数值为游戏化近似，仅借鉴时代背景。
 // =============================================================
 const CARGO = {
-  coal:    { name:'煤炭',   rate:0.90, color:'#3b3a36', k:1.40 },
-  ore:     { name:'矿石',   rate:0.85, color:'#8a5a3c', k:0.90 },
-  steel:   { name:'钢材',   rate:1.15, color:'#5f7287', k:1.00 },
-  grain:   { name:'粮食',   rate:1.00, color:'#c49a2c', k:1.00 },
-  oil:     { name:'油品',   rate:1.30, color:'#6b4f8a', k:1.00 },
+  coal:    { name:'煤炭',   rate:0.90, color:'#6b6a60', k:1.40 },
+  ore:     { name:'矿石',   rate:0.85, color:'#9a5b2e', k:0.90 },
+  steel:   { name:'钢材',   rate:1.15, color:'#1d3f6e', k:1.00 },
+  grain:   { name:'粮食',   rate:1.00, color:'#b8902a', k:1.00 },
+  oil:     { name:'油品',   rate:1.30, color:'#5e4b8b', k:1.00 },
   cont:    { name:'集装箱', rate:1.50, color:'#b3261e', k:1.10 },
   general: { name:'件杂货', rate:1.25, color:'#2f6b3f', k:1.20 },
 };

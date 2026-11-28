@@ -1,0 +1,126 @@
+/* 票根复古设计令牌。画布读取同一组颜色，不依赖 DOM 主题覆盖。 */
+:root {
+  --paper-0:#fffaf0;
+  --paper-1:#fbf6ea;
+  --paper-2:#f7f0de;
+  --paper-3:#f4ecd9;
+  --paper-4:#e9dfc8;
+  --paper-5:#e3d8bd;
+  --paper-hint:#fff6dd;
+  --ink-1:#2a2a22;
+  --ink-2:#5a5544;
+  --ink-3:#756b55;
+  --line-1:#cbbd9c;
+  --line-2:#a8977a;
+  --green-900:#2f4f3a;
+  --green-800:#264232;
+  --green-700:#2f6b3f;
+  --green-600:#4d6e57;
+  --red-700:#b3261e;
+  --red-800:#8e1c16;
+  --navy-700:#1d3f6e;
+  --amber-700:#85591a;
+  --on-dark:var(--paper-3);
+  --on-dark-2:#c9d6b8;
+  --on-red:#fff8e8;
+  --class-1:var(--red-700);
+  --class-2:var(--navy-700);
+  --class-3:var(--green-700);
+  --class-4:#9a5b2e;
+  --class-5:#b8902a;
+  --class-6:#5e4b8b;
+  --class-7:#2f7f7a;
+  --class-8:#6b6a60;
+
+  --serif:"Songti SC","Noto Serif SC","STSong",serif;
+  --mono:"Courier New","Songti SC","Noto Serif SC",monospace;
+  --fs-cap:11px;
+  --fs-sm:12px;
+  --fs-body:14px;
+  --fs-h3:15px;
+  --fs-h2:17px;
+  --fs-h1:20px;
+  --fs-num:18px;
+  --lh-cap:16px;
+  --lh-sm:18px;
+  --lh-body:22px;
+  --lh-h3:22px;
+  --lh-h2:24px;
+  --lh-h1:28px;
+  --lh-num:24px;
+  --space-1:4px;
+  --space-2:8px;
+  --space-3:12px;
+  --space-4:16px;
+  --space-6:24px;
+  --r:2px;
+  --r-modal:4px;
+  --r-round:50%;
+  --shadow:0 6px 18px rgba(42,42,34,.18);
+  --scrim:rgba(42,42,34,.64);
+
+  /* 现有组件使用的语义变量。 */
+  --bg:var(--paper-4);
+  --bg2:var(--paper-3);
+  --panel:var(--paper-2);
+  --panel2:var(--paper-0);
+  --line:var(--line-1);
+  --line2:var(--line-2);
+  --text:var(--ink-1);
+  --text2:var(--ink-2);
+  --text3:var(--ink-3);
+  --gold:var(--red-700);
+  --gold2:var(--red-800);
+  --green:var(--green-700);
+  --red:var(--red-700);
+  --blue:var(--navy-700);
+  --purple:var(--class-6);
+  --cyan:var(--class-7);
+  --gain:var(--red-700);
+  --loss:var(--green-700);
+  --finance-neutral:var(--ink-3);
+  --finance-revenue:var(--class-2);
+  --finance-expense:var(--class-4);
+
+  --m-grid:color-mix(in srgb,var(--ink-2) 8%,transparent);
+  --m-gridText:color-mix(in srgb,var(--ink-2) 48%,transparent);
+  --m-plateau:color-mix(in srgb,var(--class-4) 14%,transparent);
+  --m-plateauLine:color-mix(in srgb,var(--class-4) 25%,transparent);
+  --m-terrText:color-mix(in srgb,var(--class-4) 75%,transparent);
+  --m-river:color-mix(in srgb,var(--class-2) 45%,transparent);
+  --m-region:color-mix(in srgb,var(--class-4) 8%,transparent);
+  --m-cand:color-mix(in srgb,var(--ink-2) 35%,transparent);
+  --m-state:var(--class-8);
+  --m-stateElec:#3f5f8a;
+  --m-stateHsr:var(--class-2);
+  --m-own:var(--class-1);
+  --m-city:var(--paper-2);
+  --m-cityLine:var(--ink-2);
+  --m-cityLit:var(--class-1);
+  --m-cityLitLine:var(--red-800);
+  --m-halo:color-mix(in srgb,var(--paper-2) 96%,transparent);
+  --m-label:var(--ink-2);
+  --m-labelLit:var(--red-800);
+  --m-glow:rgba(179,38,30,A);
+  --m-font:var(--serif);
+  --m-water:#a7c1c6;
+  --m-grid-line:color-mix(in srgb,var(--line-1) 45%,transparent);
+}
+@media (min-width:761px) {
+  :root {
+    --fs-cap:10px;
+    --fs-sm:11px;
+    --fs-body:13px;
+    --fs-h3:14px;
+    --fs-h2:16px;
+    --fs-h1:19px;
+    --fs-num:17px;
+    --lh-cap:15px;
+    --lh-sm:17px;
+    --lh-body:21px;
+    --lh-h3:21px;
+    --lh-h2:23px;
+    --lh-h1:27px;
+    --lh-num:23px;
+  }
+}
